@@ -10,6 +10,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from datasets.dataset_synapse import Synapse_dataset
+try:
+    from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
+except:
+    pass
 from utils import test_single_volume
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
@@ -25,7 +29,7 @@ parser.add_argument('--list_dir', type=str,
                     default='./lists/lists_Synapse', help='list dir')
 
 parser.add_argument('--max_iterations', type=int,default=20000, help='maximum epoch number to train')
-parser.add_argument('--max_epochs', type=int, default=30, help='maximum epoch number to train')
+parser.add_argument('--max_epochs', type=int, default=150, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=24,
                     help='batch_size per gpu')
 parser.add_argument('--img_size', type=int, default=224, help='input patch size of network input')
@@ -64,6 +68,7 @@ def inference(args, model, test_save_path=None):
     return "Testing Finished!"
 
 
+
 if __name__ == "__main__":
 
     if not args.deterministic:
@@ -78,6 +83,14 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     dataset_config = {
+        'ACDC': {
+            'Dataset': ACDC_dataset,  # datasets.dataset_acdc.BaseDataSets,
+            'volume_path': '../data/ACDC',
+            'list_dir': None,
+            'num_classes': 4,
+            'z_spacing': 5,
+            'info': '3D'
+        },
         'Synapse': {
             'Dataset': Synapse_dataset,
             'volume_path': '../data/Synapse/test_vol_h5',
@@ -102,8 +115,8 @@ if __name__ == "__main__":
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size!=16 else snapshot_path
     snapshot_path = snapshot_path + '_epo' + str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
-    if dataset_name == 'ACDC':  # using max_epoch instead of iteration to control training duration
-        snapshot_path = snapshot_path + '_' + str(args.max_iterations)[0:2] + 'k' if args.max_iterations != 30000 else snapshot_path
+    # if dataset_name == 'ACDC':  # using max_epoch instead of iteration to control training duration
+    #     snapshot_path = snapshot_path + '_' + str(args.max_iterations)[0:2] + 'k' if args.max_iterations != 30000 else snapshot_path
     snapshot_path = snapshot_path+'_bs'+str(args.batch_size)
     snapshot_path = snapshot_path + '_lr' + str(args.base_lr) if args.base_lr != 0.01 else snapshot_path
     snapshot_path = snapshot_path + '_'+str(args.img_size)
@@ -123,6 +136,10 @@ if __name__ == "__main__":
     snapshot_name = snapshot_path.split('/')[-1]
 
     log_folder = './test_log/test_log_' + args.exp
+    
+    if args.test_save_dir:
+        log_folder = os.path.join(args.test_save_dir, log_folder)
+        
     os.makedirs(log_folder, exist_ok=True)
     logging.basicConfig(filename=log_folder + '/'+snapshot_name+".txt", level=logging.INFO, format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -130,11 +147,8 @@ if __name__ == "__main__":
     logging.info(snapshot_name)
 
     if args.is_savenii:
-        args.test_save_dir = '../predictions'
         test_save_path = os.path.join(args.test_save_dir, args.exp, snapshot_name)
         os.makedirs(test_save_path, exist_ok=True)
     else:
         test_save_path = None
     inference(args, net, test_save_path)
-
-
