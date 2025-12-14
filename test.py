@@ -14,7 +14,8 @@ try:
     from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
 except:
     pass
-from utils import test_single_volume
+from datasets.dataset_drive import Drive_dataset
+from utils import test_single_volume, test_single_image
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
 
@@ -55,8 +56,12 @@ def inference(args, model, test_save_path=None):
     for i_batch, sampled_batch in tqdm(enumerate(testloader)):
         h, w = sampled_batch["image"].size()[2:]
         image, label, case_name = sampled_batch["image"], sampled_batch["label"], sampled_batch['case_name'][0]
-        metric_i = test_single_volume(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
-                                      test_save_path=test_save_path, case=case_name, z_spacing=args.z_spacing)
+        if args.dataset == 'DRIVE':
+             metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
+                                       test_save_path=test_save_path, case=case_name)
+        else:
+             metric_i = test_single_volume(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
+                                       test_save_path=test_save_path, case=case_name, z_spacing=args.z_spacing)
         metric_list += np.array(metric_i)
         logging.info('idx %d case %s mean_dice %f mean_hd95 %f' % (i_batch, case_name, np.mean(metric_i, axis=0)[0], np.mean(metric_i, axis=0)[1]))
     metric_list = metric_list / len(db_test)
@@ -97,6 +102,13 @@ if __name__ == "__main__":
             'list_dir': './lists/lists_Synapse',
             'num_classes': 9,
             'z_spacing': 1,
+        },
+        'DRIVE': {
+            'Dataset': Drive_dataset,
+            'volume_path': '../data/DRIVE',
+            'list_dir': None,
+            'num_classes': 2,
+            'z_spacing': 1, # Unused for 2D but required by dict access in some places? No, dataset fields.
         },
     }
     dataset_name = args.dataset

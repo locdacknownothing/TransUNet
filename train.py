@@ -7,9 +7,10 @@ import torch
 import torch.backends.cudnn as cudnn
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
-from trainer import trainer_synapse, trainer_acdc
+from trainer import trainer_synapse, trainer_acdc, trainer_drive
 from datasets.dataset_synapse import Synapse_dataset
 from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
+from datasets.dataset_drive import Drive_dataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
@@ -70,6 +71,12 @@ if __name__ == "__main__":
             'list_dir': './lists/lists_Synapse',
             'num_classes': 9,
         },
+        'DRIVE': {
+            'Dataset': Drive_dataset,
+            'root_path': '../data/DRIVE',
+            'list_dir': None,
+            'num_classes': 2,
+        },
     }
     args.num_classes = dataset_config[dataset_name]['num_classes']
     args.root_path = dataset_config[dataset_name]['root_path']
@@ -99,5 +106,5 @@ if __name__ == "__main__":
     net = ViT_seg(config_vit, img_size=args.img_size, num_classes=config_vit.n_classes).cuda()
     net.load_from(weights=np.load(config_vit.pretrained_path))
 
-    trainer = {'Synapse': trainer_synapse,'ACDC': trainer_acdc,}
+    trainer = {'Synapse': trainer_synapse,'ACDC': trainer_acdc, 'DRIVE': trainer_drive}
     trainer[dataset_name](args, net, snapshot_path)

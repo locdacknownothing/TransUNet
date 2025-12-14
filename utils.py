@@ -100,3 +100,56 @@ def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_s
         sitk.WriteImage(img_itk, test_save_path + '/'+ case + "_img.nii.gz")
         sitk.WriteImage(lab_itk, test_save_path + '/'+ case + "_gt.nii.gz")
     return metric_list
+
+
+def test_single_image(image, label, net, classes, patch_size=[224, 224], test_save_path=None, case=None):
+    # image: (C, H, W) or (H, W)
+    # label: (H, W)
+    
+    # image comes from test.py as tensor or numpy?
+    # test.py: image, label = sampled_batch["image"], sampled_batch["label"]
+    # In test_single_volume: image = image.squeeze(0).cpu().detach().numpy()
+    # So input is Tensor (B, C, H, W) -> squeeze(0) -> (C, H, W)
+    
+    image = image.squeeze(0).cpu().detach().numpy()
+    label = label.squeeze(0).cpu().detach().numpy()
+    
+    if len(image.shape) == 3:
+        # C, H, W
+        input_image = torch.from_numpy(image).unsqueeze(0).float().cuda() # (1, C, H, W)
+    elif len(image.shape) == 2:
+        # H, W
+        input_image = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).float().cuda() # (1, 1, H, W)
+    
+    net.eval()
+    with torch.no_grad():
+        outputs = net(input_image)
+        # outputs: (1, num_classes, H, W)
+        out = torch.argmax(torch.softmax(outputs, dim=1), dim=1).squeeze(0)
+        prediction = out.cpu().detach().numpy() # (H, W)
+        
+    metric_list = []
+    # label is 0/1 for binary. classes=2.
+    # If binary, prediction is 0 or 1.
+    # calculate_metric_percase expects pred and gt.
+    for i in range(1, classes):
+        metric_list.append(calculate_metric_percase(prediction == i, label == i))
+
+    if test_save_path is not None:
+        # Save as PNG
+        import cv2
+        # Normalize image to 0-255 for saving
+        # image is float.
+        if len(image.shape) == 3:
+             img_save = np.transpose(image, (1, 2, 0)) # H, W, C
+        else:
+             img_save = image
+             
+        img_save = (img_save - img_save.min()) / (img_save.max() - img_save.min() + 1e-8) * 255
+        img_save = img_save.astype(np.uint8)
+        
+        cv2.imwrite(test_save_path + '/'+case + "_img.png", img_save)
+        cv2.imwrite(test_save_path + '/'+case + "_gt.png", (label*255).astype(np.uint8))
+        cv2.imwrite(test_save_path + '/'+case + "_pred.png", (prediction*255).astype(np.uint8))
+        
+    return metric_list
