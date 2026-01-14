@@ -15,6 +15,8 @@ try:
 except:
     pass
 from datasets.dataset_drive import Drive_dataset
+from datasets.dataset_chasedb import ChaseDB_dataset
+from datasets.dataset_hrf import HRF_dataset
 from utils import test_single_volume, test_single_image
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
@@ -56,7 +58,7 @@ def inference(args, model, test_save_path=None):
     for i_batch, sampled_batch in tqdm(enumerate(testloader)):
         h, w = sampled_batch["image"].size()[2:]
         image, label, case_name = sampled_batch["image"], sampled_batch["label"], sampled_batch['case_name'][0]
-        if args.dataset == 'DRIVE':
+        if args.dataset in ['DRIVE', 'CHASEDB', 'HRF']:
              metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
                                        test_save_path=test_save_path, case=case_name)
         else:
@@ -108,7 +110,21 @@ if __name__ == "__main__":
             'volume_path': '../data/DRIVE',
             'list_dir': None,
             'num_classes': 2,
-            'z_spacing': 1, # Unused for 2D but required by dict access in some places? No, dataset fields.
+            'z_spacing': 1,
+        },
+        'CHASEDB': {
+            'Dataset': ChaseDB_dataset,
+            'volume_path': '../data/CHASEDB',
+            'list_dir': None,
+            'num_classes': 2,
+            'z_spacing': 1,
+        },
+        'HRF': {
+            'Dataset': HRF_dataset,
+            'volume_path': '../data/HRF',
+            'list_dir': None,
+            'num_classes': 2,
+            'z_spacing': 1,
         },
     }
     dataset_name = args.dataset

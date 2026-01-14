@@ -7,10 +7,12 @@ import torch
 import torch.backends.cudnn as cudnn
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
-from trainer import trainer_synapse, trainer_acdc, trainer_drive
+from trainer import trainer_synapse, trainer_acdc, trainer_drive, trainer_chasedb, trainer_hrf
 from datasets.dataset_synapse import Synapse_dataset
 from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
 from datasets.dataset_drive import Drive_dataset
+from datasets.dataset_chasedb import ChaseDB_dataset
+from datasets.dataset_hrf import HRF_dataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
@@ -77,6 +79,18 @@ if __name__ == "__main__":
             'list_dir': None,
             'num_classes': 2,
         },
+        'CHASEDB': {
+            'Dataset': ChaseDB_dataset,
+            'root_path': '../data/CHASEDB',
+            'list_dir': None,
+            'num_classes': 2,
+        },
+        'HRF': {
+            'Dataset': HRF_dataset,
+            'root_path': '../data/HRF',
+            'list_dir': None,
+            'num_classes': 2,
+        },
     }
     args.num_classes = dataset_config[dataset_name]['num_classes']
     args.root_path = dataset_config[dataset_name]['root_path']
@@ -106,5 +120,5 @@ if __name__ == "__main__":
     net = ViT_seg(config_vit, img_size=args.img_size, num_classes=config_vit.n_classes).cuda()
     net.load_from(weights=np.load(config_vit.pretrained_path))
 
-    trainer = {'Synapse': trainer_synapse,'ACDC': trainer_acdc, 'DRIVE': trainer_drive}
+    trainer = {'Synapse': trainer_synapse,'ACDC': trainer_acdc, 'DRIVE': trainer_drive, 'CHASEDB': trainer_chasedb, 'HRF': trainer_hrf}
     trainer[dataset_name](args, net, snapshot_path)
