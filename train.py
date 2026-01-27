@@ -16,7 +16,7 @@ from datasets.dataset_hrf import HRF_dataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
-                    default='../data/Synapse/train_npz', help='root dir for data')
+                    default='data/Synapse/train_npz', help='root dir for data')
 parser.add_argument('--dataset', type=str,
                     default='Synapse', help='experiment_name')
 parser.add_argument('--list_dir', type=str,
@@ -63,31 +63,31 @@ if __name__ == "__main__":
     dataset_config = {
         'ACDC': {
             'Dataset': ACDC_dataset,
-            'root_path': '../data/ACDC',
+            'root_path': 'data/ACDC',
             'list_dir': None,
             'num_classes': 4,
         },
         'Synapse': {
             'Dataset': Synapse_dataset,
-            'root_path': '../data/Synapse/train_npz',
+            'root_path': 'data/Synapse/train_npz',
             'list_dir': './lists/lists_Synapse',
             'num_classes': 9,
         },
         'DRIVE': {
             'Dataset': Drive_dataset,
-            'root_path': '../data/DRIVE',
+            'root_path': 'data/DRIVE',
             'list_dir': None,
             'num_classes': 2,
         },
         'CHASEDB': {
             'Dataset': ChaseDB_dataset,
-            'root_path': '../data/CHASEDB',
+            'root_path': 'data/CHASEDB',
             'list_dir': None,
             'num_classes': 2,
         },
         'HRF': {
             'Dataset': HRF_dataset,
-            'root_path': '../data/HRF',
+            'root_path': 'data/HRF',
             'list_dir': None,
             'num_classes': 2,
         },
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     args.Dataset = dataset_config[dataset_name]['Dataset']
     args.is_pretrain = True
     args.exp = 'TU_' + dataset_name + str(args.img_size)
-    snapshot_path = "../model/{}/{}".format(args.exp, 'TU')
+    snapshot_path = "model/{}/{}".format(args.exp, 'TU')
     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
     snapshot_path += '_' + args.vit_name
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)

@@ -61,7 +61,7 @@ class RandomGenerator(object):
         return sample
 
 class HRF_dataset(Dataset):
-    def __init__(self, base_dir, split, transform=None):
+    def __init__(self, base_dir, split, transform=None, *args, **kwargs):
         self.transform = transform
         self.split = split
         self.base_dir = base_dir

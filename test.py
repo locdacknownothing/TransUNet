@@ -23,7 +23,7 @@ from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--volume_path', type=str,
-                    default='../data/Synapse/test_vol_h5', help='root dir for validation volume data')  # for acdc volume_path=root_dir
+                    default='data/Synapse/test_vol_h5', help='root dir for validation volume data')  # for acdc volume_path=root_dir
 parser.add_argument('--dataset', type=str,
                     default='Synapse', help='experiment_name')
 parser.add_argument('--num_classes', type=int,
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     dataset_config = {
         'ACDC': {
             'Dataset': ACDC_dataset,  # datasets.dataset_acdc.BaseDataSets,
-            'volume_path': '../data/ACDC',
+            'volume_path': 'data/ACDC',
             'list_dir': None,
             'num_classes': 4,
             'z_spacing': 5,
@@ -100,28 +100,28 @@ if __name__ == "__main__":
         },
         'Synapse': {
             'Dataset': Synapse_dataset,
-            'volume_path': '../data/Synapse/test_vol_h5',
+            'volume_path': 'data/Synapse/test_vol_h5',
             'list_dir': './lists/lists_Synapse',
             'num_classes': 9,
             'z_spacing': 1,
         },
         'DRIVE': {
             'Dataset': Drive_dataset,
-            'volume_path': '../data/DRIVE',
+            'volume_path': 'data/DRIVE',
             'list_dir': None,
             'num_classes': 2,
             'z_spacing': 1,
         },
         'CHASEDB': {
             'Dataset': ChaseDB_dataset,
-            'volume_path': '../data/CHASEDB',
+            'volume_path': 'data/CHASEDB',
             'list_dir': None,
             'num_classes': 2,
             'z_spacing': 1,
         },
         'HRF': {
             'Dataset': HRF_dataset,
-            'volume_path': '../data/HRF',
+            'volume_path': 'data/HRF',
             'list_dir': None,
             'num_classes': 2,
             'z_spacing': 1,
@@ -137,7 +137,7 @@ if __name__ == "__main__":
 
     # name the same snapshot defined in train script!
     args.exp = 'TU_' + dataset_name + str(args.img_size)
-    snapshot_path = "../model/{}/{}".format(args.exp, 'TU')
+    snapshot_path = "model/{}/{}".format(args.exp, 'TU')
     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
     snapshot_path += '_' + args.vit_name
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
