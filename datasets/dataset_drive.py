@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from skimage import io, transform
 from PIL import Image
 import pandas as pd
+import tiler
 
 def random_rot_flip(image, label):
     k = np.random.randint(0, 4)
@@ -44,21 +45,12 @@ class RandomGenerator(object):
             x, y, c = image.shape
             
         if x != self.output_size[0] or y != self.output_size[1]:
-            # Zoom expects channel first if we want to zoom all channels? No, zoom is spatial.
-            # If image is H, W, 3:
-            if c == 3:
-                 # Resize using skimage might be easier or ndimage.zoom per channel
-                 # Be careful with channels.
-                 # Let's use resize from skimage or PIL before converting to numpy in __getitem__?
-                 # But RandomGenerator is passed to Dataset.
-                 # Let's assume input is already resized in __getitem__ for simplicity or handle here.
-                 # To simplify, we'll implement simple resize if needed, but better to ensure __getitem__ provides correct size 
-                 # or we use scipy zoom for each channel.
+             if c == 3:
                  image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y, 1), order=3)
-            else:
+             else:
                  image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
             
-            label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
             
         # Transpose to C, H, W
         if len(image.shape) == 3:
@@ -72,14 +64,13 @@ class RandomGenerator(object):
         return sample
 
 class Drive_dataset(Dataset):
-    def __init__(self, base_dir, split, transform=None, *args, **kwargs):
+    def __init__(self, base_dir, split, transform=None, tile_size=224, overlap=0.5, *args, **kwargs):
         self.transform = transform
         self.split = split
         self.base_dir = base_dir
+        self.tile_size = tile_size
+        self.overlap = overlap
         
-        # Determine CSV file based on split
-        # We assume dataset_drive logic maps 'train' to train.csv and 'test'/'val' accordingly
-        # But get_public_data.py creates train.csv, val.csv, test.csv
         csv_map = {
             'train': 'train.csv',
             'val': 'val.csv',
@@ -88,66 +79,106 @@ class Drive_dataset(Dataset):
         
         csv_file = os.path.join(base_dir, csv_map.get(split, 'test.csv'))
         
-        # We need to handle paths. The CSV contains relative paths like "data/DRIVE/images/..."
-        # But base_dir might be "/app/data/DRIVE".
-        # If we run on modal, CSV paths might need adjustment if they are relative to "src/references/lwnet"
-        # but we are mounting data differently.
-        # Let's assume we regenerate CSVs or fix paths.
-        # Ideally, we read the CSV and prepend base_dir if the CSV paths are just filenames, 
-        # but they seem to be "data/DRIVE/images/..."
-        # We can strip "data/DRIVE/" prefix.
-        
         self.data_df = pd.read_csv(csv_file)
         self.image_paths = self.data_df['im_paths'].tolist()
         self.label_paths = self.data_df['gt_paths'].tolist()
         
+        self.img_shape = (584, 565, 3)
+        self.lbl_shape = (584, 565, 1)
+
+        # Define Tiler for this specific image shape (to be safe if sizes vary slightly)
+        self.img_tiler = tiler.Tiler(
+            data_shape=self.img_shape,
+            tile_shape=(self.tile_size, self.tile_size, self.img_shape[-1]),
+            overlap=(int(self.tile_size * self.overlap), int(self.tile_size * self.overlap), 0),
+            channel_dimension=2,
+            mode='reflect'
+        )
+        
+        self.lbl_tiler = tiler.Tiler(
+            data_shape=self.lbl_shape,
+            tile_shape=(self.tile_size, self.tile_size, 1),
+            overlap=(int(self.tile_size * self.overlap), int(self.tile_size * self.overlap), 0),
+            channel_dimension=2,
+            mode='reflect'
+        )
+        self.tiles_per_image = len(self.img_tiler)
+
     def __len__(self):
-        return len(self.image_paths)
+        if self.split == 'train':
+            return len(self.image_paths) * self.tiles_per_image
+        else:
+            return len(self.image_paths)
 
     def __getitem__(self, idx):
-        # CSV now contains absolute paths generated during preparation
-        img_path = self.image_paths[idx]
-        label_path = self.label_paths[idx]
+        if self.split == 'train':
+            img_idx = idx // self.tiles_per_image
+            tile_id = idx % self.tiles_per_image
+        else:
+            img_idx = idx
+            tile_id = -1 # Not used for validation (full image)
+
+        img_path = self.image_paths[img_idx]
+        label_path = self.label_paths[img_idx]
         
         image = io.imread(img_path)
         label = io.imread(label_path)
         
-        # Handle 3D label loading (e.g. GIF (1, H, W) or RGB (H, W, 3))
         if len(label.shape) == 3:
             label = np.squeeze(label)
-            # If still 3D (e.g. RGB label loaded as such), take first channel
             if len(label.shape) == 3:
                  label = label[:, :, 0]
         
-        # Drive label: 0 bg, >0 vessel.
-        # Robust binarization
+        # Binarize label
         label = (label > 0).astype(np.float32)
         
-        # Pre-resize
-        # Using skimage transform resize
-        # preserve_range=True means we keep the values, but they become float.
-        # If input was 0-255, output is 0-255.
-        image = transform.resize(image, (224, 224), order=3, preserve_range=True, anti_aliasing=True).astype(np.float32)
-        
-        # Normalize image: Z-score normalization (per image) which is common for medical/contrast variations
-        # Also TransUNet/R50 expects somewhat normalized inputs.
-        # Check if we need to scale to 0-1 first?
-        # If we do z-score, 0-255 or 0-1 base doesn't 'matter' for the shape, but mean value changes.
-        # Let's simple z-score.
+        # Normalize image z-score
+        image = image.astype(np.float32)
         if image.std() > 0:
             image = (image - image.mean()) / (image.std() + 1e-8)
         else:
              image = image - image.mean()
+        
+        # Tiling logic for training
+        if self.split == 'train':
+            # Handle channels
+            if len(image.shape) == 2:
+                image = np.expand_dims(image, axis=-1)
+            
+            if image.shape != self.img_shape:
+                raise ValueError(f"Image shape {image.shape} does not match reference shape {self.img_shape}")
 
-        label = transform.resize(label, (224, 224), order=0, preserve_range=True, anti_aliasing=False)
-        label = (label > 0.5).astype(np.uint8)
-
-        sample = {'image': image, 'label': label}
-        if self.transform:
-            sample = self.transform(sample)
+            # Label needs channel dim because of tiler expected data_shape.
+            label = np.expand_dims(label, axis=-1)
+            
+            if label.shape != self.lbl_shape:
+                raise ValueError(f"Label shape {label.shape} does not match reference shape {self.lbl_shape}")
+            
+            actual_len = len(self.img_tiler)
+            tile_id = tile_id % actual_len
+            
+            image_tile = self.img_tiler.get_tile(image, tile_id)
+            label_tile = self.lbl_tiler.get_tile(label, tile_id)
+            
+            # Squeeze back
+            # image_tile: H, W, C
+            # label_tile: H, W, 1 -> H, W
+            label_tile = label_tile.squeeze(-1)
+            
+            # image_tile might be H,W,1 if original was gray. If RGB, H,W,3.
+            if image_tile.shape[-1] == 1:
+                image_tile = image_tile.squeeze(-1)
+                
+            sample = {'image': image_tile, 'label': label_tile}
         else:
-            # Default formatting if no transform
-            # Transpose H, W, C -> C, H, W
+            label = (label > 0.5).astype(np.uint8)
+            sample = {'image': image, 'label': label}
+
+        if self.transform and self.split == 'train':
+            sample = self.transform(sample)
+        elif self.split != 'train':
+            # Validation: Format for Pytorch
+            # H, W, C -> C, H, W
             if len(image.shape) == 3:
                 image = image.transpose(2, 0, 1)
             else:

@@ -4,6 +4,7 @@ from medpy import metric
 from scipy.ndimage import zoom
 import torch.nn as nn
 import SimpleITK as sitk
+import tiler
 
 
 class DiceLoss(nn.Module):
@@ -151,5 +152,77 @@ def test_single_image(image, label, net, classes, patch_size=[224, 224], test_sa
         cv2.imwrite(test_save_path + '/'+case + "_img.png", img_save)
         cv2.imwrite(test_save_path + '/'+case + "_gt.png", (label*255).astype(np.uint8))
         cv2.imwrite(test_save_path + '/'+case + "_pred.png", (prediction*255).astype(np.uint8))
+        
+    return metric_list
+
+
+def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0.5, batch_size=4, test_save_path=None, case=None):
+    """
+    Inference using tiler library for overlap-tile strategy.
+    """
+    image = image.squeeze(0).cpu().detach().numpy() # C, H, W or H, W
+    label = label.squeeze(0).cpu().detach().numpy() # H, W
+    
+    # Check if image is CHW or HW. Tiler expects HWC or HW.
+    # If CHW (3, H, W), transpose to HWC.
+    if len(image.shape) == 3:
+        image = image.transpose(1, 2, 0)
+    elif len(image.shape) == 2:
+        image = np.expand_dims(image, axis=-1)
+        
+    # shape is now (H, W, C)
+        
+    # Initialize Tiler for image
+    img_tiler = tiler.Tiler(
+        data_shape=image.shape,
+        tile_shape=(tile_size, tile_size, image.shape[-1]),
+        overlap=(int(tile_size * overlap), int(tile_size * overlap), 0),
+        channel_dimension=2,
+        mode='reflect'
+    )
+    
+    # Initialize Tiler for mask (probabilities)
+    # We want to store probabilities for each class
+    mask_tiler = tiler.Tiler(
+        data_shape=(image.shape[0], image.shape[1], classes),
+        tile_shape=(tile_size, tile_size, classes),
+        overlap=(int(tile_size * overlap), int(tile_size * overlap), 0),
+        channel_dimension=2,
+        mode='reflect'
+    )
+    
+    # Calculate padding if needed
+    new_shape, padding = img_tiler.calculate_padding()
+    img_tiler.recalculate(data_shape=new_shape)
+    mask_tiler.recalculate(data_shape=new_shape)
+    
+    padded_img = np.pad(image, padding, mode="reflect")
+    
+    mask_merger = tiler.Merger(tiler=mask_tiler, window="overlap-tile")
+        
+    net.eval()
+    for batch_id, batch in img_tiler(padded_img, batch_size=batch_size, progress_bar=False):
+        # batch is (B, H, W, C)
+        # Model expects (B, C, H, W)
+        batch_tensor = torch.from_numpy(batch.transpose(0, 3, 1, 2)).float().cuda()
+        
+        with torch.no_grad():
+            outputs = net(batch_tensor)
+            probs = torch.softmax(outputs, dim=1) # (B, Classes, H, W)
+            
+        # Tiler Merger expects (B, H, W, Classes)
+        probs_np = probs.cpu().numpy().transpose(0, 2, 3, 1)
+        mask_merger.add_batch(batch_id, batch_size, probs_np)
+        
+    mask_pred_probs = mask_merger.merge(extra_padding=padding, dtype=np.float32)
+    # mask_pred_probs is (H, W, Classes)
+    
+    # Argmax
+    prediction = np.argmax(mask_pred_probs, axis=-1)
+    
+    # Calculate metrics
+    metric_list = []
+    for i in range(1, classes):
+        metric_list.append(calculate_metric_percase(prediction == i, label == i))
         
     return metric_list

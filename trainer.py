@@ -12,7 +12,7 @@ from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from utils import DiceLoss, test_single_volume
+from utils import DiceLoss, test_single_volume, test_single_image_tiler
 from torchvision import transforms
 
 def trainer_acdc(args, model, snapshot_path):
@@ -282,30 +282,34 @@ def trainer_drive(args, model, snapshot_path):
         # Only run every 5 epochs or so to save time, or every epoch
         if (epoch_num + 1) % 1 == 0:
             model.eval()
-            metric_list = 0.0
+            metric_list = (0.0,)  # shape (1,) for broadcasting 
+
             for i_batch, sampled_batch in enumerate(valloader):
-                image, label = sampled_batch["image"], sampled_batch["label"]
-                # test_single_volume logic?
-                # dataset_drive returns 2D, so we can just run forward.
-                # test_single_volume assumes 3D volume usually in synapse but let's check utils.
-                # Since DRIVE is strictly 2D images, simplified inference.
-                image, label = image.cuda(), label.cuda()
-                with torch.no_grad():
-                    output = model(image)
-                    output = torch.argmax(torch.softmax(output, dim=1), dim=1, keepdim=True)
-                    # Calculate Dice
-                    # Assuming num_classes=2, label is 0/1. output is 0/1.
-                    from utils import calculate_metric_percase
-                    # calculate_metric_percase(pred, gt)
-                    # pred: numpy array, gt: numpy array
-                    output = output.squeeze().cpu().numpy()
-                    label = label.squeeze().cpu().numpy()
-                    metric_i = calculate_metric_percase(output, label)
+                # image, label = sampled_batch["image"], sampled_batch["label"]
+                # logging.info((sampled_batch["image"].shape, sampled_batch["label"].shape))
+
+                for image, label in zip(sampled_batch["image"], sampled_batch["label"]):
+                    metric_i = test_single_image_tiler(image, label, model, classes=2)
+                    # image, label = image.cuda(), label.cuda()
+                    # with torch.no_grad():
+                    #     output = model(image)
+                    #     output = torch.argmax(torch.softmax(output, dim=1), dim=1, keepdim=True)
+                    #     # Calculate Dice
+                    #     # Assuming num_classes=2, label is 0/1. output is 0/1.
+                    #     from utils import calculate_metric_percase
+                    #     # calculate_metric_percase(pred, gt)
+                    #     # pred: numpy array, gt: numpy array
+                    #     output = output.squeeze().cpu().numpy()
+                    #     label = label.squeeze().cpu().numpy()
+                    #     metric_i = calculate_metric_percase(output, label)
                     metric_list += np.array(metric_i)
             
+            metric_list = np.array(metric_list)
+            # logging.info(metric_list)  # shape: (1, 2)
+
             metric_list = metric_list / len(db_val)
-            performance = metric_list[0] # Dice
-            mean_hd95 = metric_list[1]
+            performance = metric_list[0, 0] # Dice
+            mean_hd95 = metric_list[0, 1]  # HD95
             
             writer.add_scalar('info/val_mean_dice', performance, iter_num)
             writer.add_scalar('info/val_mean_hd95', mean_hd95, iter_num)
