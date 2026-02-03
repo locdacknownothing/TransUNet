@@ -58,10 +58,10 @@ def inference(args, model, test_save_path=None):
     for i_batch, sampled_batch in tqdm(enumerate(testloader)):
         h, w = sampled_batch["image"].size()[2:]
         image, label, case_name = sampled_batch["image"], sampled_batch["label"], sampled_batch['case_name'][0]
-        if args.dataset in ['DRIVE']:
+        if args.dataset in ['DRIVE', 'CHASEDB']:
              metric_i = test_single_image_tiler(image, label, model, classes=args.num_classes, tile_size=args.img_size,
                                        test_save_path=test_save_path, case=case_name)
-        elif args.dataset in ['CHASEDB', 'HRF']:
+        elif args.dataset in ['HRF']:
              metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
                                        test_save_path=test_save_path, case=case_name)
         else:
