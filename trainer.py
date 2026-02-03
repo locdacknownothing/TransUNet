@@ -257,7 +257,8 @@ def trainer_drive(args, model, snapshot_path):
 
             logging.info('iteration %d : loss : %f, loss_ce: %f' % (iter_num, loss.item(), loss_ce.item()))
 
-            if iter_num % 100 == 0:
+            if iter_num % 100 == 0 or iter_num >= max_iterations:                
+                # import cv2
                 # Log visualization
                 image = image_batch[0, 0:3, :, :] # RGB
                 if image.shape[0] == 1:
@@ -266,18 +267,14 @@ def trainer_drive(args, model, snapshot_path):
                 writer.add_image('train/Image', image, iter_num)
                 
                 outputs_argmax = torch.argmax(torch.softmax(outputs, dim=1), dim=1, keepdim=True)
-                writer.add_image('train/Prediction', outputs_argmax[0, ...] * 255 if num_classes==2 else outputs_argmax[0,...]*50, iter_num)
+                outputs_argmax = outputs_argmax[0, ...]*255
+                # cv2.imwrite(snapshot_path + "/prediction.png", outputs_argmax.cpu().detach().numpy().astype(np.uint8).transpose(1,2,0))
+                writer.add_image('train/Prediction', outputs_argmax, iter_num)
                 
-                labs = label_batch[0, ...].unsqueeze(0) * 255 if num_classes==2 else label_batch[0,...].unsqueeze(0)*50
-                writer.add_image('train/GroundTruth', labs, iter_num)
-
-        # Validation at end of epoch
-        # save_interval = 10
-        # if epoch_num > int(max_epoch / 2) and (epoch_num + 1) % save_interval == 0:
-        #     save_mode_path = os.path.join(snapshot_path, 'epoch_' + str(epoch_num) + '.pth')
-        #     torch.save(model.state_dict(), save_mode_path)
-        #     logging.info("save model to {}".format(save_mode_path))
-
+                labs = label_batch[0,...]*255
+                # cv2.imwrite(snapshot_path + "/groundtruth.png", labs.cpu().detach().numpy().astype(np.uint8))
+                writer.add_image('train/GroundTruth', labs.unsqueeze(0), iter_num)
+                
         # Run validation
         # Only run every 5 epochs or so to save time, or every epoch
         if (epoch_num + 1) % 1 == 0:
@@ -289,7 +286,7 @@ def trainer_drive(args, model, snapshot_path):
                 # logging.info((sampled_batch["image"].shape, sampled_batch["label"].shape))
 
                 for image, label in zip(sampled_batch["image"], sampled_batch["label"]):
-                    metric_i = test_single_image_tiler(image, label, model, classes=2)
+                    metric_i = test_single_image_tiler(image, label, model, classes=num_classes)
                     # image, label = image.cuda(), label.cuda()
                     # with torch.no_grad():
                     #     output = model(image)

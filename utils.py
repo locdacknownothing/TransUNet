@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import torch
 from medpy import metric
@@ -137,8 +138,6 @@ def test_single_image(image, label, net, classes, patch_size=[224, 224], test_sa
         metric_list.append(calculate_metric_percase(prediction == i, label == i))
 
     if test_save_path is not None:
-        # Save as PNG
-        import cv2
         # Normalize image to 0-255 for saving
         # image is float.
         if len(image.shape) == 3:
@@ -224,5 +223,22 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
     metric_list = []
     for i in range(1, classes):
         metric_list.append(calculate_metric_percase(prediction == i, label == i))
+
+    if test_save_path is not None:
+        # Normalize image to 0-255 for saving
+        # image is float.
+        if len(image.shape) == 3:
+             img_save = image # H, W, C
+        else:
+             img_save = image
+             
+        img_save = (img_save - img_save.min()) / (img_save.max() - img_save.min() + 1e-8) * 255
+        img_save = img_save.astype(np.uint8)
+
+        print(img_save.shape, label.shape, prediction.shape)
+        
+        cv2.imwrite(test_save_path + '/'+case + "_img.png", img_save)
+        cv2.imwrite(test_save_path + '/'+case + "_gt.png", (label*255).astype(np.uint8))
+        cv2.imwrite(test_save_path + '/'+case + "_pred.png", (prediction*255).astype(np.uint8))
         
     return metric_list

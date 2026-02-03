@@ -52,14 +52,14 @@ python test.py --dataset Synapse --vit_name R50-ViT-B_16
 - Run the train script on fundus datasets.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python train.py --dataset DRIVE --vit_name R50-ViT-B_16 --batch_size 1 --base_lr 0.005 --max_epochs 1000
+CUDA_VISIBLE_DEVICES=0 python train.py --dataset DRIVE --vit_name R50-ViT-B_16 --batch_size 16 --base_lr 0.005 --max_epochs 2000
 CUDA_VISIBLE_DEVICES=0 python train.py --dataset CHASEDB --vit_name R50-ViT-B_16 --batch_size 1 --base_lr 0.005 --max_epochs 1000
 CUDA_VISIBLE_DEVICES=0 python train.py --dataset HRF --vit_name R50-ViT-B_16 --batch_size 1 --base_lr 0.005 --max_epochs 1000
 ```
 - Run the train script on fundus datasets.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python test.py --dataset DRIVE --vit_name R50-ViT-B_16 --batch_size 1 --base_lr 0.005 --max_epochs 1000 --is_savenii
+CUDA_VISIBLE_DEVICES=0 python test.py --dataset DRIVE --vit_name R50-ViT-B_16 --batch_size 16 --base_lr 0.005 --max_epochs 2000 --is_savenii
 CUDA_VISIBLE_DEVICES=0 python test.py --dataset CHASEDB --vit_name R50-ViT-B_16 --batch_size 1 --base_lr 0.005 --max_epochs 1000 --is_savenii
 CUDA_VISIBLE_DEVICES=0 python test.py --dataset HRF --vit_name R50-ViT-B_16 --batch_size 1 --base_lr 0.005 --max_epochs 1000 --is_savenii
 ```
