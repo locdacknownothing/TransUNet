@@ -2,6 +2,9 @@ import os
 import os.path as osp
 import shutil
 import pandas as pd
+import requests
+import zipfile
+from io import BytesIO
 from tqdm import tqdm
 from PIL import Image
 from skimage import io
@@ -12,7 +15,55 @@ from torchvision.transforms.functional import resize
 
 print('downloading data')
 
-call = 'mkdir data && cd data && curl https://codeload.github.com/sraashis/deepdyn/tar.gz/master | tar -xz --strip=2 deepdyn-master/data'
+# ————— Inputs —————
+github_repo = "agaldran/lwnet"
+folder_path = "data"     # folder inside the repo you want
+local_target = "data"
+
+# ————— Download ZIP —————
+zip_url = f"https://github.com/{github_repo}/archive/refs/heads/master.zip"
+print(f"Downloading repo {github_repo} ...")
+resp = requests.get(zip_url)
+
+if resp.status_code != 200:
+    print("❌ Failed to download repo zip.")
+    exit()
+
+print("Downloaded repo zip successfully.")
+
+# ————— Extract Target Folder —————
+with zipfile.ZipFile(BytesIO(resp.content)) as z:
+    members = z.namelist()
+    
+    # find the prefix of the zip files, e.g. lwnet-master/
+    prefix = members[0].split("/")[0] + "/"
+
+    # filter only files under the folder we want
+    target_files = [
+        m for m in members
+        if m.startswith(prefix + folder_path + "/")
+    ]
+
+    if not target_files:
+        print("❌ No files found in target folder.")
+        exit()
+
+    for file in target_files:
+        # compute where to extract
+        relative = file.replace(prefix + folder_path + "/", "")
+        out_path = os.path.join(local_target, relative)
+
+        if file.endswith("/"):
+            os.makedirs(out_path, exist_ok=True)
+        else:
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with open(out_path, "wb") as f:
+                f.write(z.read(file))
+
+print("✅ Folder downloaded and extracted!")
+########################################################################################################################
+
+call = 'cd data && curl https://codeload.github.com/sraashis/deepdyn/tar.gz/master | tar -xz --strip=2 deepdyn-master/data'
 os.system(call)
 shutil.rmtree('data/VEVIO')
 shutil.rmtree('data/DRIVE/splits')
@@ -136,39 +187,43 @@ print('DRIVE A/V prepared')
 
 ########################################################################################################################
 path_ims = 'data/CHASEDB/images'
-path_masks = 'data/CHASEDB/masks'
+# path_masks = 'data/CHASEDB/masks'
 path_gts = 'data/CHASEDB/manual'
 
 all_im_names = sorted(os.listdir(path_ims))
-all_mask_names = sorted(os.listdir(path_masks))
+# all_mask_names = sorted(os.listdir(path_masks))
 all_gt_names = sorted(os.listdir(path_gts))
 
 # append paths
 all_im_names = [osp.join(path_ims, n) for n in all_im_names]
-all_mask_names = [osp.join(path_masks, n) for n in all_mask_names]
+# all_mask_names = [osp.join(path_masks, n) for n in all_mask_names]
 all_gt_names = [osp.join(path_gts, n) for n in all_gt_names if '1st' in n]
 
 num_ims = len(all_im_names)
 train_im_names = all_im_names[ :8]
 test_im_names  = all_im_names[8: ]
 
-train_mask_names = all_mask_names[ :8]
-test_mask_names  = all_mask_names[8: ]
+# train_mask_names = all_mask_names[ :8]
+# test_mask_names  = all_mask_names[8: ]
 
 train_gt_names = all_gt_names[ :8]
 test_gt_names  = all_gt_names[8: ]
 
-df_chasedb_all = pd.DataFrame({'im_paths': all_im_names,
-                             'gt_paths': all_gt_names,
-                             'mask_paths': all_mask_names})
+df_chasedb_all = pd.DataFrame({
+    'im_paths': all_im_names,
+    'gt_paths': all_gt_names,
+    # 'mask_paths': all_mask_names
+})
 
 df_chasedb_train = pd.DataFrame({'im_paths': train_im_names,
                               'gt_paths': train_gt_names,
-                              'mask_paths': train_mask_names})
+                            #   'mask_paths': train_mask_names
+                            })
 
 df_chasedb_test = pd.DataFrame({'im_paths': test_im_names,
                               'gt_paths': test_gt_names,
-                              'mask_paths': test_mask_names})
+                            #   'mask_paths': test_mask_names
+                              })
 
 num_ims = len(df_chasedb_train)
 tr_ims = int(0.8*num_ims)

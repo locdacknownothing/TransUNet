@@ -519,20 +519,13 @@ def trainer_hrf(args, model, snapshot_path):
             model.eval()
             metric_list = 0.0
             for i_batch, sampled_batch in enumerate(valloader):
-                image, label = sampled_batch["image"], sampled_batch["label"]
-                image, label = image.cuda(), label.cuda()
-                with torch.no_grad():
-                    output = model(image)
-                    output = torch.argmax(torch.softmax(output, dim=1), dim=1, keepdim=True)
-                    from utils import calculate_metric_percase
-                    output = output.squeeze().cpu().numpy()
-                    label = label.squeeze().cpu().numpy()
-                    metric_i = calculate_metric_percase(output, label)
+                for image, label in zip(sampled_batch["image"], sampled_batch["label"]):
+                    metric_i = test_single_image_tiler(image, label, model, classes=num_classes)
                     metric_list += np.array(metric_i)
             
             metric_list = metric_list / len(db_val)
-            performance = metric_list[0]
-            mean_hd95 = metric_list[1]
+            performance = metric_list[0, 0]
+            mean_hd95 = metric_list[0, 1]
             
             writer.add_scalar('info/val_mean_dice', performance, iter_num)
             writer.add_scalar('info/val_mean_hd95', mean_hd95, iter_num)
