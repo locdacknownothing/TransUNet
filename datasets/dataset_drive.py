@@ -1,88 +1,19 @@
 import os
-import random
 import numpy as np
 import torch
-from scipy import ndimage
-from scipy.ndimage.interpolation import zoom
 from torch.utils.data import Dataset
 from skimage import io, transform
-from PIL import Image
 import pandas as pd
 import tiler
 
-def random_rot_flip(image, label, mask=None):
-    k = np.random.randint(0, 4)
-    image = np.rot90(image, k)
-    label = np.rot90(label, k)
-    if mask is not None: mask = np.rot90(mask, k)
-    axis = np.random.randint(0, 2)
-    image = np.flip(image, axis=axis).copy()
-    label = np.flip(label, axis=axis).copy()
-    if mask is not None: mask = np.flip(mask, axis=axis).copy()
-    if mask is not None: return image, label, mask
-    return image, label
-
-def random_rotate(image, label, mask=None):
-    angle = np.random.randint(-20, 20)
-    image = ndimage.rotate(image, angle, order=0, reshape=False)
-    label = ndimage.rotate(label, angle, order=0, reshape=False)
-    if mask is not None: mask = ndimage.rotate(mask, angle, order=0, reshape=False)
-    if mask is not None: return image, label, mask
-    return image, label
-
-class RandomGenerator(object):
-    def __init__(self, output_size):
-        self.output_size = output_size
-
-    def __call__(self, sample):
-        image, label = sample['image'], sample['label']
-        mask = sample.get('fov_mask', None)
-
-        if random.random() > 0.5:
-            if mask is not None: image, label, mask = random_rot_flip(image, label, mask)
-            else: image, label = random_rot_flip(image, label)
-        elif random.random() > 0.5:
-            if mask is not None: image, label, mask = random_rotate(image, label, mask)
-            else: image, label = random_rotate(image, label)
-        
-        # image is H, W, C or H, W
-        if len(image.shape) == 2:
-            x, y = image.shape
-            c = 1
-        else:
-            x, y, c = image.shape
-            
-        if x != self.output_size[0] or y != self.output_size[1]:
-            if c == 3:
-                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y, 1), order=3)
-            else:
-                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
-        
-            label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
-            if mask is not None: mask = zoom(mask, (self.output_size[0] / x, self.output_size[1] / y), order=0)
-            
-        # Transpose to C, H, W
-        if len(image.shape) == 3:
-             image = image.transpose(2, 0, 1) # H, W, C -> C, H, W
-        else:
-             image = np.expand_dims(image, axis=0) # H, W -> 1, H, W
-
-        image = torch.from_numpy(image.astype(np.float32))
-        label = torch.from_numpy(label.astype(np.float32))
-        
-        if mask is not None:
-            mask = torch.from_numpy(mask.astype(np.float32))
-            sample = {'image': image, 'label': label.long(), 'fov_mask': mask}
-        else:
-            sample = {'image': image, 'label': label.long()}
-        return sample
 
 class DriveDataset(Dataset):
-    def __init__(self, base_dir, split, transform=None, *args, **kwargs):
+    def __init__(self, base_dir, split, transform=None, img_size=224, *args, **kwargs):
         self.transform = transform
         self.split = split
         self.base_dir = base_dir
-        
+        self.img_size = img_size
+
         csv_map = {
             'train': 'train.csv',
             'val': 'val.csv',
@@ -115,13 +46,7 @@ class DriveDataset(Dataset):
         # Drive label: 0 bg, >0 vessel.
         # Robust binarization
         label = (label > 0).astype(np.float32)
-        
-        # Pre-resize
-        # Using skimage transform resize
-        # preserve_range=True means we keep the values, but they become float.
-        # If input was 0-255, output is 0-255.
-        image = transform.resize(image, (224, 224), order=3, preserve_range=True, anti_aliasing=True).astype(np.float32)
-        
+                
         # Normalize image: Z-score normalization (per image) which is common for medical/contrast variations
         # Also TransUNet/R50 expects somewhat normalized inputs.
         # Check if we need to scale to 0-1 first?
@@ -132,14 +57,18 @@ class DriveDataset(Dataset):
         else:
              image = image - image.mean()
 
-        label = transform.resize(label, (224, 224), order=0, preserve_range=True, anti_aliasing=False)
-        label = (label > 0.5).astype(np.uint8)
-
         sample = {'image': image, 'label': label}
         if self.transform:
             sample = self.transform(sample)
         else:
             # Default formatting if no transform
+            # Pre-resize
+            # Using skimage transform resize
+            # preserve_range=True means we keep the values, but they become float.
+            # If input was 0-255, output is 0-255.
+            image = transform.resize(image, (self.img_size, self.img_size), order=3, preserve_range=True, anti_aliasing=True).astype(np.float32)
+            label = transform.resize(label, (self.img_size, self.img_size), order=0, preserve_range=True, anti_aliasing=False)
+
             # Transpose H, W, C -> C, H, W
             if len(image.shape) == 3:
                 image = image.transpose(2, 0, 1)
@@ -153,19 +82,30 @@ class DriveDataset(Dataset):
         sample['case_name'] = os.path.basename(img_path).replace('.tif', '')
         return sample
 
+
 class DriveTileDataset(DriveDataset):
-    def __init__(self, base_dir, split, transform=None, tile_size=224, overlap=0.5, *args, **kwargs):
-        super().__init__(base_dir, split, transform, *args, **kwargs)
+    def __init__(self, base_dir, split, transform=None, img_size=224, overlap=0.5, *args, **kwargs):
+        super().__init__(base_dir, split, transform, img_size, *args, **kwargs)
 
         # Mask
         self.mask_paths = self.data_df['mask_paths'].tolist() if 'mask_paths' in self.data_df.columns else None
         
         # Tiling parameters
-        self.img_shape = (584, 565, 3)
-        self.lbl_shape = (584, 565, 1)
-
-        self.tile_size = tile_size
+        self.tile_size = img_size
         self.overlap = overlap
+
+        if len(self.image_paths) > 0:
+            # Read first image to determine shape
+            e_img = io.imread(self.image_paths[0])
+            self.img_shape = e_img.shape
+            # If grayscale, shape might be (H, W)
+            if len(self.img_shape) == 2:
+                self.img_shape = (self.img_shape[0], self.img_shape[1], 1)
+            
+            self.lbl_shape = (self.img_shape[0], self.img_shape[1], 1)
+        else:
+            self.img_shape = (584, 565, 3)
+            self.lbl_shape = (584, 565, 1)
         
         # Define Tiler for this specific image shape (to be safe if sizes vary slightly)
         self.img_tiler = tiler.Tiler(
