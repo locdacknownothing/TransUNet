@@ -9,17 +9,12 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from datasets.dataset_synapse import Synapse_dataset
-try:
-    from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
-except:
-    pass
-from datasets.dataset_drive import Drive_dataset
-from datasets.dataset_chasedb import ChaseDB_dataset
-from datasets.dataset_hrf import HRF_dataset
+
 from utils import test_single_volume, test_single_image, test_single_image_tiler
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
+
+from config import dataset_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--volume_path', type=str,
@@ -58,12 +53,14 @@ def inference(args, model, test_save_path=None):
     for i_batch, sampled_batch in tqdm(enumerate(testloader)):
         h, w = sampled_batch["image"].size()[2:]
         image, label, case_name = sampled_batch["image"], sampled_batch["label"], sampled_batch['case_name'][0]
+        fov_mask = sampled_batch.get("fov_mask", None)
         if args.dataset in ['DRIVE', 'CHASEDB', 'HRF']:
-             metric_i = test_single_image_tiler(image, label, model, classes=args.num_classes, tile_size=args.img_size,
+            if args.tile:
+                metric_i = test_single_image_tiler(image, label, model, classes=args.num_classes, tile_size=args.img_size,
+                                       test_save_path=test_save_path, case=case_name, fov_mask=fov_mask)
+            else:
+                metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
                                        test_save_path=test_save_path, case=case_name)
-        # elif args.dataset in ['HRF']: 
-        #      metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
-        #                                test_save_path=test_save_path, case=case_name)
         else:
              metric_i = test_single_volume(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
                                        test_save_path=test_save_path, case=case_name, z_spacing=args.z_spacing)
@@ -92,44 +89,6 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    dataset_config = {
-        'ACDC': {
-            'Dataset': ACDC_dataset,  # datasets.dataset_acdc.BaseDataSets,
-            'volume_path': 'data/ACDC',
-            'list_dir': None,
-            'num_classes': 4,
-            'z_spacing': 5,
-            'info': '3D'
-        },
-        'Synapse': {
-            'Dataset': Synapse_dataset,
-            'volume_path': 'data/Synapse/test_vol_h5',
-            'list_dir': './lists/lists_Synapse',
-            'num_classes': 9,
-            'z_spacing': 1,
-        },
-        'DRIVE': {
-            'Dataset': Drive_dataset,
-            'volume_path': 'data/DRIVE',
-            'list_dir': None,
-            'num_classes': 2,
-            'z_spacing': 1,
-        },
-        'CHASEDB': {
-            'Dataset': ChaseDB_dataset,
-            'volume_path': 'data/CHASEDB',
-            'list_dir': None,
-            'num_classes': 2,
-            'z_spacing': 1,
-        },
-        'HRF': {
-            'Dataset': HRF_dataset,
-            'volume_path': 'data/HRF',
-            'list_dir': None,
-            'num_classes': 2,
-            'z_spacing': 1,
-        },
-    }
     dataset_name = args.dataset
     args.num_classes = dataset_config[dataset_name]['num_classes']
     args.volume_path = dataset_config[dataset_name]['volume_path']
@@ -137,17 +96,19 @@ if __name__ == "__main__":
     args.list_dir = dataset_config[dataset_name]['list_dir']
     args.z_spacing = dataset_config[dataset_name]['z_spacing']
     args.is_pretrain = True
+    args.loss_name = dataset_config[dataset_name].get('loss_name', 'dice_ce')
+    args.tile = dataset_config[dataset_name].get('tile', False)
 
     # name the same snapshot defined in train script!
     args.exp = 'TU_' + dataset_name + str(args.img_size)
     snapshot_path = "model/{}/{}".format(args.exp, 'TU')
     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
     snapshot_path += '_' + args.vit_name
+    snapshot_path = snapshot_path + '_tile_' if args.tile else snapshot_path
+    snapshot_path = snapshot_path + '_' + args.loss_name if args.loss_name != "dice_ce" else snapshot_path
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size!=16 else snapshot_path
     snapshot_path = snapshot_path + '_epo' + str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
-    # if dataset_name == 'ACDC':  # using max_epoch instead of iteration to control training duration
-    #     snapshot_path = snapshot_path + '_' + str(args.max_iterations)[0:2] + 'k' if args.max_iterations != 30000 else snapshot_path
     snapshot_path = snapshot_path+'_bs'+str(args.batch_size)
     snapshot_path = snapshot_path + '_lr' + str(args.base_lr) if args.base_lr != 0.01 else snapshot_path
     snapshot_path = snapshot_path + '_'+str(args.img_size)
@@ -163,7 +124,12 @@ if __name__ == "__main__":
 
     snapshot = os.path.join(snapshot_path, 'best_model.pth')
     if not os.path.exists(snapshot): snapshot = snapshot.replace('best_model', 'epoch_'+str(args.max_epochs-1))
-    net.load_state_dict(torch.load(snapshot))
+    
+    checkpoint = torch.load(snapshot, weights_only=False)
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        net.load_state_dict(checkpoint['state_dict'])
+    else:
+        net.load_state_dict(checkpoint)
     snapshot_name = snapshot_path.split('/')[-1]
 
     log_folder = './test_log/test_log_' + args.exp

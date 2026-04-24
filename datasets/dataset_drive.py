@@ -10,19 +10,24 @@ from PIL import Image
 import pandas as pd
 import tiler
 
-def random_rot_flip(image, label):
+def random_rot_flip(image, label, mask=None):
     k = np.random.randint(0, 4)
     image = np.rot90(image, k)
     label = np.rot90(label, k)
+    if mask is not None: mask = np.rot90(mask, k)
     axis = np.random.randint(0, 2)
     image = np.flip(image, axis=axis).copy()
     label = np.flip(label, axis=axis).copy()
+    if mask is not None: mask = np.flip(mask, axis=axis).copy()
+    if mask is not None: return image, label, mask
     return image, label
 
-def random_rotate(image, label):
+def random_rotate(image, label, mask=None):
     angle = np.random.randint(-20, 20)
     image = ndimage.rotate(image, angle, order=0, reshape=False)
     label = ndimage.rotate(label, angle, order=0, reshape=False)
+    if mask is not None: mask = ndimage.rotate(mask, angle, order=0, reshape=False)
+    if mask is not None: return image, label, mask
     return image, label
 
 class RandomGenerator(object):
@@ -31,11 +36,14 @@ class RandomGenerator(object):
 
     def __call__(self, sample):
         image, label = sample['image'], sample['label']
+        mask = sample.get('fov_mask', None)
 
         if random.random() > 0.5:
-            image, label = random_rot_flip(image, label)
+            if mask is not None: image, label, mask = random_rot_flip(image, label, mask)
+            else: image, label = random_rot_flip(image, label)
         elif random.random() > 0.5:
-            image, label = random_rotate(image, label)
+            if mask is not None: image, label, mask = random_rotate(image, label, mask)
+            else: image, label = random_rotate(image, label)
         
         # image is H, W, C or H, W
         if len(image.shape) == 2:
@@ -45,12 +53,13 @@ class RandomGenerator(object):
             x, y, c = image.shape
             
         if x != self.output_size[0] or y != self.output_size[1]:
-             if c == 3:
-                 image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y, 1), order=3)
-             else:
-                 image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
-            
-             label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+            if c == 3:
+                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y, 1), order=3)
+            else:
+                image = zoom(image, (self.output_size[0] / x, self.output_size[1] / y), order=3)
+        
+            label = zoom(label, (self.output_size[0] / x, self.output_size[1] / y), order=0)
+            if mask is not None: mask = zoom(mask, (self.output_size[0] / x, self.output_size[1] / y), order=0)
             
         # Transpose to C, H, W
         if len(image.shape) == 3:
@@ -60,16 +69,19 @@ class RandomGenerator(object):
 
         image = torch.from_numpy(image.astype(np.float32))
         label = torch.from_numpy(label.astype(np.float32))
-        sample = {'image': image, 'label': label.long()}
+        
+        if mask is not None:
+            mask = torch.from_numpy(mask.astype(np.float32))
+            sample = {'image': image, 'label': label.long(), 'fov_mask': mask}
+        else:
+            sample = {'image': image, 'label': label.long()}
         return sample
 
-class Drive_dataset(Dataset):
-    def __init__(self, base_dir, split, transform=None, tile_size=224, overlap=0.5, *args, **kwargs):
+class DriveDataset(Dataset):
+    def __init__(self, base_dir, split, transform=None, *args, **kwargs):
         self.transform = transform
         self.split = split
         self.base_dir = base_dir
-        self.tile_size = tile_size
-        self.overlap = overlap
         
         csv_map = {
             'train': 'train.csv',
@@ -83,9 +95,78 @@ class Drive_dataset(Dataset):
         self.image_paths = self.data_df['im_paths'].tolist()
         self.label_paths = self.data_df['gt_paths'].tolist()
         
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        label_path = self.label_paths[idx]
+        
+        image = io.imread(img_path)
+        label = io.imread(label_path)
+        
+        # Handle 3D label loading (e.g. GIF (1, H, W) or RGB (H, W, 3))
+        if len(label.shape) == 3:
+            label = np.squeeze(label)
+            # If still 3D (e.g. RGB label loaded as such), take first channel
+            if len(label.shape) == 3:
+                 label = label[:, :, 0]
+        
+        # Drive label: 0 bg, >0 vessel.
+        # Robust binarization
+        label = (label > 0).astype(np.float32)
+        
+        # Pre-resize
+        # Using skimage transform resize
+        # preserve_range=True means we keep the values, but they become float.
+        # If input was 0-255, output is 0-255.
+        image = transform.resize(image, (224, 224), order=3, preserve_range=True, anti_aliasing=True).astype(np.float32)
+        
+        # Normalize image: Z-score normalization (per image) which is common for medical/contrast variations
+        # Also TransUNet/R50 expects somewhat normalized inputs.
+        # Check if we need to scale to 0-1 first?
+        # If we do z-score, 0-255 or 0-1 base doesn't 'matter' for the shape, but mean value changes.
+        # Let's simple z-score.
+        if image.std() > 0:
+            image = (image - image.mean()) / (image.std() + 1e-8)
+        else:
+             image = image - image.mean()
+
+        label = transform.resize(label, (224, 224), order=0, preserve_range=True, anti_aliasing=False)
+        label = (label > 0.5).astype(np.uint8)
+
+        sample = {'image': image, 'label': label}
+        if self.transform:
+            sample = self.transform(sample)
+        else:
+            # Default formatting if no transform
+            # Transpose H, W, C -> C, H, W
+            if len(image.shape) == 3:
+                image = image.transpose(2, 0, 1)
+            else:
+                image = np.expand_dims(image, axis=0)
+            
+            image = torch.from_numpy(image.astype(np.float32))
+            label = torch.from_numpy(label.astype(np.float32))
+            sample = {'image': image, 'label': label.long()}
+            
+        sample['case_name'] = os.path.basename(img_path).replace('.tif', '')
+        return sample
+
+class DriveTileDataset(DriveDataset):
+    def __init__(self, base_dir, split, transform=None, tile_size=224, overlap=0.5, *args, **kwargs):
+        super().__init__(base_dir, split, transform, *args, **kwargs)
+
+        # Mask
+        self.mask_paths = self.data_df['mask_paths'].tolist() if 'mask_paths' in self.data_df.columns else None
+        
+        # Tiling parameters
         self.img_shape = (584, 565, 3)
         self.lbl_shape = (584, 565, 1)
 
+        self.tile_size = tile_size
+        self.overlap = overlap
+        
         # Define Tiler for this specific image shape (to be safe if sizes vary slightly)
         self.img_tiler = tiler.Tiler(
             data_shape=self.img_shape,
@@ -120,17 +201,25 @@ class Drive_dataset(Dataset):
 
         img_path = self.image_paths[img_idx]
         label_path = self.label_paths[img_idx]
+        mask_path = self.mask_paths[img_idx] if self.mask_paths else None
         
         image = io.imread(img_path)
         label = io.imread(label_path)
+        mask = io.imread(mask_path) if mask_path else None
         
         if len(label.shape) == 3:
             label = np.squeeze(label)
             if len(label.shape) == 3:
                  label = label[:, :, 0]
+                 
+        if mask is not None and len(mask.shape) == 3:
+            mask = np.squeeze(mask)
+            if len(mask.shape) == 3:
+                 mask = mask[:, :, 0]
         
         # Binarize label
         label = (label > 0).astype(np.float32)
+        if mask is not None: mask = (mask > 0).astype(np.float32)
         
         # Normalize image z-score
         image = image.astype(np.float32)
@@ -170,9 +259,18 @@ class Drive_dataset(Dataset):
                 image_tile = image_tile.squeeze(-1)
                 
             sample = {'image': image_tile, 'label': label_tile}
+            
+            if mask is not None:
+                mask = np.expand_dims(mask, axis=-1)
+                mask_tile = self.lbl_tiler.get_tile(mask, tile_id)
+                mask_tile = mask_tile.squeeze(-1)
+                sample['fov_mask'] = mask_tile
         else:
             label = (label > 0.5).astype(np.uint8)
             sample = {'image': image, 'label': label}
+            if mask is not None:
+                mask = (mask > 0.5).astype(np.uint8)
+                sample['fov_mask'] = mask
 
         if self.transform and self.split == 'train':
             sample = self.transform(sample)
@@ -187,6 +285,8 @@ class Drive_dataset(Dataset):
             image = torch.from_numpy(image.astype(np.float32))
             label = torch.from_numpy(label.astype(np.float32))
             sample = {'image': image, 'label': label.long()}
+            if mask is not None:
+                sample['fov_mask'] = torch.from_numpy(mask.astype(np.float32))
             
         sample['case_name'] = os.path.basename(img_path).replace('.tif', '')
         return sample

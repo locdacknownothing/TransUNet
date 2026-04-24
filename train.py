@@ -1,6 +1,6 @@
 import argparse
-import logging
 import os
+import shutil
 import random
 import numpy as np
 import torch
@@ -8,11 +8,8 @@ import torch.backends.cudnn as cudnn
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
 from trainer import trainer_synapse, trainer_acdc, trainer_drive, trainer_chasedb, trainer_hrf
-from datasets.dataset_synapse import Synapse_dataset
-from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
-from datasets.dataset_drive import Drive_dataset
-from datasets.dataset_chasedb import ChaseDB_dataset
-from datasets.dataset_hrf import HRF_dataset
+
+from config import dataset_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
@@ -44,6 +41,8 @@ parser.add_argument('--vit_name', type=str,
                     default='R50-ViT-B_16', help='select one vit model')
 parser.add_argument('--vit_patches_size', type=int,
                     default=16, help='vit_patches_size, default is 16')
+parser.add_argument('--resume', type=str,
+                    default=None, help='path to checkpoint to resume from')
 args = parser.parse_args()
 
 
@@ -60,47 +59,21 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     dataset_name = args.dataset
-    dataset_config = {
-        'ACDC': {
-            'Dataset': ACDC_dataset,
-            'root_path': 'data/ACDC',
-            'list_dir': None,
-            'num_classes': 4,
-        },
-        'Synapse': {
-            'Dataset': Synapse_dataset,
-            'root_path': 'data/Synapse/train_npz',
-            'list_dir': './lists/lists_Synapse',
-            'num_classes': 9,
-        },
-        'DRIVE': {
-            'Dataset': Drive_dataset,
-            'root_path': 'data/DRIVE',
-            'list_dir': None,
-            'num_classes': 2,
-        },
-        'CHASEDB': {
-            'Dataset': ChaseDB_dataset,
-            'root_path': 'data/CHASEDB',
-            'list_dir': None,
-            'num_classes': 2,
-        },
-        'HRF': {
-            'Dataset': HRF_dataset,
-            'root_path': 'data/HRF',
-            'list_dir': None,
-            'num_classes': 2,
-        },
-    }
+    
     args.num_classes = dataset_config[dataset_name]['num_classes']
     args.root_path = dataset_config[dataset_name]['root_path']
     args.list_dir = dataset_config[dataset_name]['list_dir']
     args.Dataset = dataset_config[dataset_name]['Dataset']
     args.is_pretrain = True
     args.exp = 'TU_' + dataset_name + str(args.img_size)
+    args.loss_name = dataset_config[dataset_name].get('loss_name', 'dice_ce')
+    args.tile = dataset_config[dataset_name].get('tile', False)
+
     snapshot_path = "model/{}/{}".format(args.exp, 'TU')
     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
-    snapshot_path += '_' + args.vit_name
+    snapshot_path += '_' + args.vit_name 
+    snapshot_path = snapshot_path + '_tile_' if args.tile else snapshot_path
+    snapshot_path = snapshot_path + '_' + args.loss_name if args.loss_name != "dice_ce" else snapshot_path
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size!=16 else snapshot_path
     snapshot_path = snapshot_path+'_'+str(args.max_iterations)[0:2]+'k' if args.max_iterations != 30000 else snapshot_path
@@ -110,8 +83,11 @@ if __name__ == "__main__":
     snapshot_path = snapshot_path + '_'+str(args.img_size)
     snapshot_path = snapshot_path + '_s'+str(args.seed) if args.seed!=1234 else snapshot_path
 
-    if not os.path.exists(snapshot_path):
-        os.makedirs(snapshot_path)
+    if not args.resume and os.path.exists(snapshot_path):
+        shutil.rmtree(snapshot_path)
+        
+    os.makedirs(snapshot_path, exist_ok=True)
+
     config_vit = CONFIGS_ViT_seg[args.vit_name]
     config_vit.n_classes = args.num_classes
     config_vit.n_skip = args.n_skip
