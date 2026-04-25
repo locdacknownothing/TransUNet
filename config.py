@@ -2,7 +2,7 @@ from datasets.dataset_synapse import Synapse_dataset
 from datasets.dataset_acdc import BaseDataSets as ACDC_dataset
 from datasets.dataset_drive import DriveDataset, DriveTileDataset
 from datasets.dataset_chasedb import ChaseDBDataset, ChaseDBTileDataset
-from datasets.dataset_hrf import HRF_dataset
+from datasets.dataset_hrf import HRFDataset, HRFTileDataset
 
 dataset_config = {
     'ACDC': {
@@ -45,12 +45,14 @@ dataset_config = {
         'loss_name': 'vessel_fg',
     },
     'HRF': {
-        'Dataset': HRF_dataset,
+        'Dataset': HRFTileDataset,
+        'tile': True,
         'root_path': 'data/HRF',
         'volume_path': 'data/HRF',
         'list_dir': None,
         'num_classes': 2,
         'z_spacing': 1,
-        'loss_name': 'vessel',
+        # 'loss_name': 'dice_ce',
+        'loss_name': 'vessel_fg_fov',
     },
 }

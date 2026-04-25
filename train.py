@@ -7,7 +7,7 @@ import torch
 import torch.backends.cudnn as cudnn
 from networks.vit_seg_modeling import VisionTransformer as ViT_seg
 from networks.vit_seg_modeling import CONFIGS as CONFIGS_ViT_seg
-from trainer import trainer_synapse, trainer_acdc, trainer_drive, trainer_chasedb, trainer_hrf
+from trainer import trainer_synapse, trainer_acdc, trainer_retinal_vessel
 
 from config import dataset_config
 
@@ -96,5 +96,11 @@ if __name__ == "__main__":
     net = ViT_seg(config_vit, img_size=args.img_size, num_classes=config_vit.n_classes).cuda()
     net.load_from(weights=np.load(config_vit.pretrained_path))
 
-    trainer = {'Synapse': trainer_synapse,'ACDC': trainer_acdc, 'DRIVE': trainer_drive, 'CHASEDB': trainer_chasedb, 'HRF': trainer_hrf}
+    trainer = {
+        'Synapse': trainer_synapse,
+        'ACDC': trainer_acdc, 
+        'DRIVE': trainer_retinal_vessel, 
+        'CHASEDB': trainer_retinal_vessel, 
+        'HRF': trainer_retinal_vessel,
+    }
     trainer[dataset_name](args, net, snapshot_path)
