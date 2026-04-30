@@ -8,11 +8,10 @@ import tiler
 
 
 class DriveDataset(Dataset):
-    def __init__(self, base_dir, split, transform=None, img_size=224, *args, **kwargs):
+    def __init__(self, base_dir, split, transform=None, *args, **kwargs):
         self.transform = transform
         self.split = split
         self.base_dir = base_dir
-        self.img_size = img_size
 
         csv_map = {
             'train': 'train.csv',
@@ -52,23 +51,16 @@ class DriveDataset(Dataset):
         # Check if we need to scale to 0-1 first?
         # If we do z-score, 0-255 or 0-1 base doesn't 'matter' for the shape, but mean value changes.
         # Let's simple z-score.
-        if image.std() > 0:
-            image = (image - image.mean()) / (image.std() + 1e-8)
-        else:
-             image = image - image.mean()
+        # if image.std() > 0:
+        #     image = (image - image.mean()) / (image.std() + 1e-8)
+        # else:
+        #      image = image - image.mean()
 
         sample = {'image': image, 'label': label}
         if self.transform:
             sample = self.transform(sample)
         else:
             # Default formatting if no transform
-            # Pre-resize
-            # Using skimage transform resize
-            # preserve_range=True means we keep the values, but they become float.
-            # If input was 0-255, output is 0-255.
-            image = transform.resize(image, (self.img_size, self.img_size), order=3, preserve_range=True, anti_aliasing=True).astype(np.float32)
-            label = transform.resize(label, (self.img_size, self.img_size), order=0, preserve_range=True, anti_aliasing=False)
-
             # Transpose H, W, C -> C, H, W
             if len(image.shape) == 3:
                 image = image.transpose(2, 0, 1)
@@ -85,7 +77,7 @@ class DriveDataset(Dataset):
 
 class DriveTileDataset(DriveDataset):
     def __init__(self, base_dir, split, transform=None, img_size=224, overlap=0.5, *args, **kwargs):
-        super().__init__(base_dir, split, transform, img_size, *args, **kwargs)
+        super().__init__(base_dir, split, transform, *args, **kwargs)
 
         # Mask
         self.mask_paths = self.data_df['mask_paths'].tolist() if 'mask_paths' in self.data_df.columns else None
@@ -111,30 +103,61 @@ class DriveTileDataset(DriveDataset):
         self.img_tiler = tiler.Tiler(
             data_shape=self.img_shape,
             tile_shape=(self.tile_size, self.tile_size, self.img_shape[-1]),
-            overlap=(int(self.tile_size * self.overlap), int(self.tile_size * self.overlap), 0),
+            overlap=overlap,
             channel_dimension=2,
-            mode='reflect'
+            # mode='reflect'
         )
         
         self.lbl_tiler = tiler.Tiler(
             data_shape=self.lbl_shape,
             tile_shape=(self.tile_size, self.tile_size, 1),
-            overlap=(int(self.tile_size * self.overlap), int(self.tile_size * self.overlap), 0),
+            overlap=overlap,
             channel_dimension=2,
-            mode='reflect'
+            # mode='reflect'
         )
         self.tiles_per_image = len(self.img_tiler)
+        
+        self.valid_tiles = []
+        if self.split == 'train':
+            for img_idx in range(len(self.image_paths)):
+                img_path = self.image_paths[img_idx]
+                mask_path = self.mask_paths[img_idx] if self.mask_paths else None
+                
+                if mask_path:
+                    mask = io.imread(mask_path)
+                    if len(mask.shape) == 3:
+                        mask = np.squeeze(mask)
+                        if len(mask.shape) == 3:
+                             mask = mask[:, :, 0]
+                    mask = (mask > 0).astype(np.float32)
+                    mask = np.expand_dims(mask, axis=-1)
+                    
+                    for tile_id in range(self.tiles_per_image):
+                        tile_id = tile_id % len(self.lbl_tiler)
+                        mask_tile = self.lbl_tiler.get_tile(mask, tile_id)
+                        if mask_tile.sum() > 0:
+                            self.valid_tiles.append((img_idx, tile_id))
+                else:
+                    image = io.imread(img_path)
+                    image = image.astype(np.float32)
+                    if len(image.shape) == 2:
+                        image = np.expand_dims(image, axis=-1)
+                    for tile_id in range(self.tiles_per_image):
+                        tile_id = tile_id % len(self.img_tiler)
+                        image_tile = self.img_tiler.get_tile(image, tile_id)
+                        if image_tile.std() > 0:
+                            self.valid_tiles.append((img_idx, tile_id))
+            print(f"Loaded {len(self.valid_tiles)} valid tiles out of {len(self.image_paths) * self.tiles_per_image} total tiles.")
 
     def __len__(self):
         if self.split == 'train':
-            return len(self.image_paths) * self.tiles_per_image
+            return len(self.valid_tiles)
         else:
             return len(self.image_paths)
 
     def __getitem__(self, idx):
         if self.split == 'train':
-            img_idx = idx // self.tiles_per_image
-            tile_id = idx % self.tiles_per_image
+            img_idx, tile_id = self.valid_tiles[idx]
         else:
             img_idx = idx
             tile_id = -1 # Not used for validation (full image)
@@ -162,11 +185,11 @@ class DriveTileDataset(DriveDataset):
         if mask is not None: mask = (mask > 0).astype(np.float32)
         
         # Normalize image z-score
-        image = image.astype(np.float32)
-        if image.std() > 0:
-            image = (image - image.mean()) / (image.std() + 1e-8)
-        else:
-             image = image - image.mean()
+        # image = image.astype(np.float32)
+        # if image.std() > 0:
+        #     image = (image - image.mean()) / (image.std() + 1e-8)
+        # else:
+        #      image = image - image.mean()
         
         # Tiling logic for training
         if self.split == 'train':
@@ -206,10 +229,8 @@ class DriveTileDataset(DriveDataset):
                 mask_tile = mask_tile.squeeze(-1)
                 sample['fov_mask'] = mask_tile
         else:
-            label = (label > 0.5).astype(np.uint8)
             sample = {'image': image, 'label': label}
             if mask is not None:
-                mask = (mask > 0.5).astype(np.uint8)
                 sample['fov_mask'] = mask
 
         if self.transform and self.split == 'train':
