@@ -9,169 +9,53 @@ from torch.nn.modules.loss import CrossEntropyLoss
 import SimpleITK as sitk
 import tiler
 
-
-class DiceLoss(nn.Module):
-    def __init__(self, n_classes, ignore_index=None):
-        super(DiceLoss, self).__init__()
-        self.n_classes = n_classes
-        self.ignore_index = ignore_index
-
-    def _one_hot_encoder(self, input_tensor):
-        tensor_list = []
-        for i in range(self.n_classes):
-            temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
-            tensor_list.append(temp_prob.unsqueeze(1))
-        output_tensor = torch.cat(tensor_list, dim=1)
-        return output_tensor.float()
-
-    def _dice_loss(self, score, target):
-        target = target.float()
-        smooth = 1e-5
-        intersect = torch.sum(score * target)
-        y_sum = torch.sum(target * target)
-        z_sum = torch.sum(score * score)
-        loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
-        loss = 1 - loss
-        return loss
-
-    def forward(self, inputs, target, weight=None, softmax=False):
-        if softmax:
-            inputs = torch.softmax(inputs, dim=1)
-        target = self._one_hot_encoder(target)
-        if weight is None:
-            weight = [1] * self.n_classes
-        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(), target.size())
-        class_wise_dice = []
-        loss = 0.0
-        count = 0
-        for i in range(0, self.n_classes):
-            if self.ignore_index is not None and i == self.ignore_index:
-                continue
-            dice = self._dice_loss(inputs[:, i], target[:, i])
-            class_wise_dice.append(1.0 - dice.item())
-            loss += dice * weight[i]
-            count += 1
-            
-        return loss / count if count > 0 else loss
+from losses import *
 
 
 class VesselLoss(nn.Module):
-    def __init__(self, n_classes, w_ce=0.5, w_dice=0.3, w_cldice=0.2, ce_weight=None, bg_index=0):
+    def __init__(self, n_classes, w_ce=0.4, w_dice=0.2, w_topology=0.4, alpha=None, bg_index=None):
         super(VesselLoss, self).__init__()
         self.n_classes = n_classes
         self.w_ce = w_ce
         self.w_dice = w_dice
-        self.w_cldice = w_cldice
+        self.w_topology = w_topology
 
         # Initialize individual loss components
-        self.ce_loss = CrossEntropyLoss(weight=ce_weight, reduction='none')
-        self.dice_loss = DiceLoss(n_classes, ignore_index=bg_index)
-        self.cldice_loss = SoftClDiceLoss(n_classes, bg_index=bg_index)
+        self.ce_loss = FocalLoss(alpha=alpha)
+        # self.ce_loss = CrossEntropyLoss()
+        self.dice_loss = DiceLoss(n_classes)
 
-    def forward(self, inputs, targets, fov_mask=None, softmax=True):
+        # self.topology_loss = VesselTopologyLoss(n_classes, bg_index=bg_index)
+        self.topology_loss = SoftClDiceLoss(n_classes, bg_index=bg_index)
+
+    def forward(self, inputs, targets, softmax=True):
         # Calculate individual losses
         loss_ce = self.ce_loss(inputs, targets.long())
-        if fov_mask is not None:
-            loss_ce = (loss_ce * fov_mask).sum() / (fov_mask.sum() + 1e-8)
-        else:
-            loss_ce = loss_ce.mean()
-
-        inputs_prob = torch.softmax(inputs, dim=1) if softmax else inputs
-        if fov_mask is not None:
-            inputs_prob = inputs_prob * fov_mask.unsqueeze(1)
-            targets = targets * fov_mask
-
-        loss_dice = self.dice_loss(inputs_prob, targets, softmax=False)
-        loss_cldice = self.cldice_loss(inputs_prob, targets, softmax=False)
+        loss_dice = self.dice_loss(inputs, targets, softmax=softmax)
+        loss_topology = self.topology_loss(inputs, targets, softmax=softmax)
 
         # Combine losses with specified weights
         total_loss = (self.w_ce * loss_ce) + \
                      (self.w_dice * loss_dice) + \
-                     (self.w_cldice * loss_cldice)
+                     (self.w_topology * loss_topology)
 
         # Return total loss and individual components for logging
-        return total_loss, loss_ce, loss_dice, loss_cldice
+        return total_loss, loss_ce, loss_dice, loss_topology
+
+
+def calculate_ce_weights(label_batch, num_classes):
+    total_pixels = label_batch.numel()
+    weights = []
+    for c in range(num_classes):
+        class_pixels = (label_batch == c).sum().float()
+        # Inverse frequency weighting, add epsilon to prevent division by zero
+        class_weight = total_pixels / (class_pixels + 1e-5)
+        weights.append(class_weight)
         
-
-def soft_erode(img):
-    if len(img.shape)==4:
-        p1 = -F.max_pool2d(-img, (3,1), (1,1), (1,0))
-        p2 = -F.max_pool2d(-img, (1,3), (1,1), (0,1))
-        return torch.min(p1,p2)
-    elif len(img.shape)==5:
-        p1 = -F.max_pool3d(-img,(3,1,1),(1,1,1),(1,0,0))
-        p2 = -F.max_pool3d(-img,(1,3,1),(1,1,1),(0,1,0))
-        p3 = -F.max_pool3d(-img,(1,1,3),(1,1,1),(0,0,1))
-        return torch.min(torch.min(p1, p2), p3)
-
-
-def soft_dilate(img):
-    if len(img.shape)==4:
-        return F.max_pool2d(img, (3,3), (1,1), (1,1))
-    elif len(img.shape)==5:
-        return F.max_pool3d(img,(3,3,3),(1,1,1),(1,1,1))
-
-
-def soft_open(img):
-    return soft_dilate(soft_erode(img))
-
-
-def soft_skel(img, iters):
-    img1  =  soft_open(img)
-    skel  =  F.relu(img-img1)
-    for i in range(iters):
-        img  =  soft_erode(img)
-        img1  =  soft_open(img)
-        delta  =  F.relu(img-img1)
-        skel  =  skel +  F.relu(delta-skel*delta)
-    return skel
-
-
-class SoftClDiceLoss(nn.Module):
-    def __init__(self, n_classes, iters=3, smooth=1e-5, bg_index=0):
-        super(SoftClDiceLoss, self).__init__()
-        self.n_classes = n_classes
-        self.iters = iters
-        self.smooth = smooth
-        self.bg_index = bg_index
-
-    def _one_hot_encoder(self, input_tensor):
-        tensor_list = []
-        for i in range(self.n_classes):
-            temp_prob = input_tensor == i
-            tensor_list.append(temp_prob.unsqueeze(1))
-        output_tensor = torch.cat(tensor_list, dim=1)
-        return output_tensor.float()
-
-    def forward(self, y_pred, y_true, softmax=True):
-        # y_pred: (B, C, H, W)
-        # y_true: (B, H, W)
-        if softmax:
-            y_pred = torch.softmax(y_pred, dim=1)
-        
-        y_true = self._one_hot_encoder(y_true)
-        
-        total_loss = 0.0
-        count = 0
-        
-        for i in range(self.n_classes):
-            if self.bg_index is not None and i == self.bg_index:
-                continue
-                
-            v_p = y_pred[:, i:i+1, ...]
-            v_l = y_true[:, i:i+1, ...]
-            
-            t_p = soft_skel(v_p, self.iters)
-            t_l = soft_skel(v_l, self.iters)
-            
-            tp = (torch.sum(t_p * v_l) + self.smooth) / (torch.sum(t_p) + self.smooth)
-            tr = (torch.sum(t_l * v_p) + self.smooth) / (torch.sum(t_l) + self.smooth)
-            
-            cldice = 2.0 * (tp * tr) / (tp + tr + self.smooth)
-            total_loss += 1.0 - cldice
-            count += 1
-            
-        return total_loss / count if count > 0 else total_loss
+    weights = torch.tensor(weights, device=label_batch.device)
+    # Normalize weights so they sum to num_classes
+    weights = weights / weights.sum() * num_classes
+    return weights    
 
 
 def calculate_metric_percase(pred, gt):
@@ -231,31 +115,41 @@ def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_s
     return metric_list
 
 
-def test_single_image(image, label, net, classes, patch_size=[224, 224], test_save_path=None, case=None):
+def test_single_image(image, label, net, classes, patch_size=224, test_save_path=None, case=None):
     # image: (C, H, W) or (H, W)
     # label: (H, W)
-    
-    # image comes from test.py as tensor or numpy?
-    # test.py: image, label = sampled_batch["image"], sampled_batch["label"]
-    # In test_single_volume: image = image.squeeze(0).cpu().detach().numpy()
-    # So input is Tensor (B, C, H, W) -> squeeze(0) -> (C, H, W)
     
     image = image.squeeze(0).cpu().detach().numpy()
     label = label.squeeze(0).cpu().detach().numpy()
     
     if len(image.shape) == 3:
         # C, H, W
-        input_image = torch.from_numpy(image).unsqueeze(0).float().cuda() # (1, C, H, W)
+        c, x, y = image.shape
+        if x != patch_size or y != patch_size:
+            input_img = zoom(image, (1, patch_size / x, patch_size / y), order=3)
+        else:
+            input_img = image
+        input_image = torch.from_numpy(input_img).unsqueeze(0).float().cuda() # (1, C, patch_H, patch_W)
     elif len(image.shape) == 2:
         # H, W
-        input_image = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).float().cuda() # (1, 1, H, W)
+        x, y = image.shape
+        if x != patch_size or y != patch_size:
+            input_img = zoom(image, (patch_size / x, patch_size / y), order=3)
+        else:
+            input_img = image
+        input_image = torch.from_numpy(input_img).unsqueeze(0).unsqueeze(0).float().cuda() # (1, 1, patch_H, patch_W)
     
     net.eval()
     with torch.no_grad():
         outputs = net(input_image)
-        # outputs: (1, num_classes, H, W)
+        # outputs: (1, num_classes, patch_H, patch_W)
         out = torch.argmax(torch.softmax(outputs, dim=1), dim=1).squeeze(0)
-        prediction = out.cpu().detach().numpy() # (H, W)
+        out = out.cpu().detach().numpy() # (patch_H, patch_W)
+        
+        if x != patch_size or y != patch_size:
+            prediction = zoom(out, (x / patch_size, y / patch_size), order=0)
+        else:
+            prediction = out
         
     metric_list = []
     # label is 0/1 for binary. classes=2.
@@ -288,8 +182,8 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
     """
     image = image.squeeze(0).cpu().detach().numpy() # C, H, W or H, W
     label = label.squeeze(0).cpu().detach().numpy() # H, W
-    if fov_mask is not None:
-        fov_mask = fov_mask.squeeze(0).cpu().detach().numpy() # H, W
+    # if fov_mask is not None:
+    #     fov_mask = fov_mask.squeeze(0).cpu().detach().numpy() # H, W
     
     # Check if image is CHW or HW. Tiler expects HWC or HW.
     # If CHW (3, H, W), transpose to HWC.
@@ -304,9 +198,8 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
     img_tiler = tiler.Tiler(
         data_shape=image.shape,
         tile_shape=(tile_size, tile_size, image.shape[-1]),
-        overlap=(int(tile_size * overlap), int(tile_size * overlap), 0),
+        overlap=overlap,
         channel_dimension=2,
-        mode='reflect'
     )
     
     # Initialize Tiler for mask (probabilities)
@@ -314,22 +207,24 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
     mask_tiler = tiler.Tiler(
         data_shape=(image.shape[0], image.shape[1], classes),
         tile_shape=(tile_size, tile_size, classes),
-        overlap=(int(tile_size * overlap), int(tile_size * overlap), 0),
+        overlap=overlap,
         channel_dimension=2,
-        mode='reflect'
     )
     
     # Calculate padding if needed
-    new_shape, padding = img_tiler.calculate_padding()
-    img_tiler.recalculate(data_shape=new_shape)
-    mask_tiler.recalculate(data_shape=new_shape)
+    # new_shape, padding = img_tiler.calculate_padding()
+    # img_tiler.recalculate(data_shape=new_shape)
+    # mask_tiler.recalculate(data_shape=new_shape)
     
-    padded_img = np.pad(image, padding, mode="reflect")
+    # padded_img = np.pad(image, padding)
     
-    mask_merger = tiler.Merger(tiler=mask_tiler, window="overlap-tile")
+    mask_merger = tiler.Merger(
+        tiler=mask_tiler, 
+        # window="overlap-tile",
+    )
         
     net.eval()
-    for batch_id, batch in img_tiler(padded_img, batch_size=batch_size, progress_bar=False):
+    for batch_id, batch in img_tiler(image, batch_size=batch_size, progress_bar=False):
         # batch is (B, H, W, C)
         # Model expects (B, C, H, W)
         batch_tensor = torch.from_numpy(batch.transpose(0, 3, 1, 2)).float().cuda()
@@ -342,15 +237,13 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
         probs_np = probs.cpu().numpy().transpose(0, 2, 3, 1)
         mask_merger.add_batch(batch_id, batch_size, probs_np)
         
-    mask_pred_probs = mask_merger.merge(extra_padding=padding, dtype=np.float32)
+    # mask_pred_probs = mask_merger.merge(extra_padding=padding, dtype=np.float32)
+    mask_pred_probs = mask_merger.merge(unpad=True, dtype=np.float32)
     # mask_pred_probs is (H, W, Classes)
     
     # Argmax
     prediction = np.argmax(mask_pred_probs, axis=-1)
-    
-    if fov_mask is not None:
-        prediction = prediction * fov_mask
-        
+
     # Calculate metrics
     metric_list = []
     for i in range(1, classes):
@@ -392,13 +285,13 @@ def calculate_dice_ce_loss(pred, target, num_classes, ce_weight=0.5):
     }
 
 
-def calculate_vessel_loss(pred, target, num_classes, fov_mask=None, w_ce=0.6, w_dice=0.2, w_cldice=0.2, ce_weight=None, bg_index=0):
-    vessel_loss_fn = VesselLoss(num_classes, w_ce=w_ce, w_dice=w_dice, w_cldice=w_cldice, ce_weight=ce_weight, bg_index=bg_index)
-    total_loss, loss_ce, loss_dice, loss_cldice = vessel_loss_fn(pred, target, fov_mask=fov_mask)
+def calculate_vessel_loss(pred, target, num_classes, alpha=None, bg_index=0):
+    vessel_loss_fn = VesselLoss(num_classes, alpha=alpha, bg_index=bg_index)
+    total_loss, loss_ce, loss_dice, loss_topology = vessel_loss_fn(pred, target)
     return {
         "total_loss": total_loss, 
         "loss_ce": loss_ce, 
         "loss_dice": loss_dice, 
-        "loss_cldice": loss_cldice
+        "loss_topology": loss_topology
     }
  
