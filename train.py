@@ -59,23 +59,29 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     dataset_name = args.dataset
+    dataset_info = dataset_config.get(dataset_name)
+    if dataset_info is None:
+        raise ValueError(f"Dataset {dataset_name} not found in configuration.")
     
-    args.num_classes = dataset_config[dataset_name]['num_classes']
-    args.root_path = dataset_config[dataset_name]['root_path']
-    args.list_dir = dataset_config[dataset_name]['list_dir']
-    args.Dataset = dataset_config[dataset_name]['Dataset']
+    args.num_classes = dataset_info.get('num_classes')
+    args.root_path = dataset_info.get('root_path')
+    args.list_dir = dataset_info.get('list_dir')
+    args.Dataset = dataset_info.get('Dataset')
     args.is_pretrain = True
     args.exp = 'TU_' + dataset_name + str(args.img_size)
-    args.loss_name = dataset_config[dataset_name].get('loss_name', 'dice_ce')
-    args.tile = dataset_config[dataset_name].get('tile', False)
+    args.loss_name = dataset_info.get('loss_name', 'dice_ce')
+    args.tile = dataset_info.get('tile', False)
 
     snapshot_path = "model/{}/{}".format(args.exp, 'TU')
     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
     snapshot_path += '_' + args.vit_name 
-    snapshot_path = snapshot_path + '_tile_' if args.tile else snapshot_path
-    snapshot_path = snapshot_path + '_' + args.loss_name if args.loss_name != "dice_ce" else snapshot_path
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size!=16 else snapshot_path
+
+    # snapshot_path = snapshot_path + '_tile_' if args.tile else snapshot_path
+    snapshot_path = snapshot_path + f"_{args.Dataset.__name__}" if args.Dataset else snapshot_path
+    snapshot_path = snapshot_path + '_' + args.loss_name if args.loss_name != "dice_ce" else snapshot_path
+    
     snapshot_path = snapshot_path+'_'+str(args.max_iterations)[0:2]+'k' if args.max_iterations != 30000 else snapshot_path
     snapshot_path = snapshot_path + '_epo' +str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
     snapshot_path = snapshot_path+'_bs'+str(args.batch_size)

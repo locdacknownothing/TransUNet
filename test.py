@@ -26,12 +26,12 @@ parser.add_argument('--num_classes', type=int,
 parser.add_argument('--list_dir', type=str,
                     default='./lists/lists_Synapse', help='list dir')
 
-parser.add_argument('--max_iterations', type=int,default=20000, help='maximum epoch number to train')
+parser.add_argument('--max_iterations', type=int,default=30000, help='maximum epoch number to train')
 parser.add_argument('--max_epochs', type=int, default=150, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=24,
                     help='batch_size per gpu')
 parser.add_argument('--img_size', type=int, default=224, help='input patch size of network input')
-parser.add_argument('--is_savenii', action="store_true", help='whether to save results during inference')
+parser.add_argument('--is_save', action="store_true", help='whether to save results during inference')
 
 parser.add_argument('--n_skip', type=int, default=3, help='using number of skip-connect, default is num')
 parser.add_argument('--vit_name', type=str, default='ViT-B_16', help='select one vit model')
@@ -41,6 +41,7 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--base_lr', type=float,  default=0.01, help='segmentation network learning rate')
 parser.add_argument('--seed', type=int, default=1234, help='random seed')
 parser.add_argument('--vit_patches_size', type=int, default=16, help='vit_patches_size, default is 16')
+parser.add_argument('--mode', type=str, default='best_model', help='Model to test')
 args = parser.parse_args()
 
 
@@ -59,7 +60,7 @@ def inference(args, model, test_save_path=None):
                 metric_i = test_single_image_tiler(image, label, model, classes=args.num_classes, tile_size=args.img_size,
                                        test_save_path=test_save_path, case=case_name, fov_mask=fov_mask)
             else:
-                metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
+                metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=args.img_size,
                                        test_save_path=test_save_path, case=case_name)
         else:
              metric_i = test_single_volume(image, label, model, classes=args.num_classes, patch_size=[args.img_size, args.img_size],
@@ -90,24 +91,31 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     dataset_name = args.dataset
-    args.num_classes = dataset_config[dataset_name]['num_classes']
-    args.volume_path = dataset_config[dataset_name]['volume_path']
-    args.Dataset = dataset_config[dataset_name]['Dataset']
-    args.list_dir = dataset_config[dataset_name]['list_dir']
-    args.z_spacing = dataset_config[dataset_name]['z_spacing']
+    dataset_info = dataset_config.get(dataset_name)
+    if dataset_info is None:
+        raise ValueError(f"Dataset {dataset_name} not found in configuration.")
+    
+    args.num_classes = dataset_info.get('num_classes')
+    args.volume_path = dataset_info.get('volume_path')
+    args.Dataset = dataset_info.get('Dataset')
+    args.list_dir = dataset_info.get('list_dir')
+    args.z_spacing = dataset_info.get('z_spacing')
     args.is_pretrain = True
-    args.loss_name = dataset_config[dataset_name].get('loss_name', 'dice_ce')
-    args.tile = dataset_config[dataset_name].get('tile', False)
+    args.loss_name = dataset_info.get('loss_name', 'dice_ce')
+    args.tile = dataset_info.get('tile', False)
 
     # name the same snapshot defined in train script!
     args.exp = 'TU_' + dataset_name + str(args.img_size)
     snapshot_path = "model/{}/{}".format(args.exp, 'TU')
     snapshot_path = snapshot_path + '_pretrain' if args.is_pretrain else snapshot_path
     snapshot_path += '_' + args.vit_name
-    snapshot_path = snapshot_path + '_tile_' if args.tile else snapshot_path
-    snapshot_path = snapshot_path + '_' + args.loss_name if args.loss_name != "dice_ce" else snapshot_path
     snapshot_path = snapshot_path + '_skip' + str(args.n_skip)
     snapshot_path = snapshot_path + '_vitpatch' + str(args.vit_patches_size) if args.vit_patches_size!=16 else snapshot_path
+
+    snapshot_path = snapshot_path + f"_{args.Dataset.__name__}" if args.Dataset else snapshot_path
+    snapshot_path = snapshot_path + '_' + args.loss_name if args.loss_name != "dice_ce" else snapshot_path
+
+    snapshot_path = snapshot_path+'_'+str(args.max_iterations)[0:2]+'k' if args.max_iterations != 30000 else snapshot_path
     snapshot_path = snapshot_path + '_epo' + str(args.max_epochs) if args.max_epochs != 30 else snapshot_path
     snapshot_path = snapshot_path+'_bs'+str(args.batch_size)
     snapshot_path = snapshot_path + '_lr' + str(args.base_lr) if args.base_lr != 0.01 else snapshot_path
@@ -122,8 +130,7 @@ if __name__ == "__main__":
         config_vit.patches.grid = (int(args.img_size/args.vit_patches_size), int(args.img_size/args.vit_patches_size))
     net = ViT_seg(config_vit, img_size=args.img_size, num_classes=config_vit.n_classes).cuda()
 
-    snapshot = os.path.join(snapshot_path, 'best_model.pth')
-    if not os.path.exists(snapshot): snapshot = snapshot.replace('best_model', 'epoch_'+str(args.max_epochs-1))
+    snapshot = os.path.join(snapshot_path, f'{args.mode}.pth')
     
     checkpoint = torch.load(snapshot, weights_only=False)
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -143,7 +150,7 @@ if __name__ == "__main__":
     logging.info(str(args))
     logging.info(snapshot_name)
 
-    if args.is_savenii:
+    if args.is_save:
         test_save_path = os.path.join(args.test_save_dir, args.exp, snapshot_name)
         os.makedirs(test_save_path, exist_ok=True)
     else:
