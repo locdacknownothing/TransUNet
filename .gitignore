@@ -328,3 +328,5 @@ __marimo__/
 data/
 model/
 
+# AI generated files
+agent/

@@ -27,11 +27,8 @@ dataset_config = {
         'tile': True,  # Whether to use tiling for DRIVE dataset
         'root_path': 'data/DRIVE',
         'volume_path': 'data/DRIVE',
-        'list_dir': None,
         'num_classes': 2,
-        'z_spacing': 1,
-        # 'loss_name': 'dice_ce',
-        'loss_name': 'vessel_fg_fov',
+        'loss_name': 'vessel_ce4_dice4_cldice2',
     },
     'CHASEDB': {
         'Dataset': ChaseDBTileDataset,

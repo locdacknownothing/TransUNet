@@ -13,34 +13,34 @@ from losses import *
 
 
 class VesselLoss(nn.Module):
-    def __init__(self, n_classes, w_ce=0.4, w_dice=0.2, w_topology=0.4, alpha=None, bg_index=None):
+    def __init__(self, n_classes, w_ce=0.4, w_dice=0.4, w_cldice=0.2, alpha=None, bg_index=None):
         super(VesselLoss, self).__init__()
         self.n_classes = n_classes
         self.w_ce = w_ce
         self.w_dice = w_dice
-        self.w_topology = w_topology
+        self.w_cldice = w_cldice
 
         # Initialize individual loss components
-        self.ce_loss = FocalLoss(alpha=alpha)
-        # self.ce_loss = CrossEntropyLoss()
+        # self.ce_loss = FocalLoss(alpha=alpha)
+        self.ce_loss = CrossEntropyLoss()
         self.dice_loss = DiceLoss(n_classes)
 
         # self.topology_loss = VesselTopologyLoss(n_classes, bg_index=bg_index)
-        self.topology_loss = SoftClDiceLoss(n_classes, bg_index=bg_index)
+        self.cldice_loss = SoftClDiceLoss(n_classes, bg_index=bg_index, fp_penalty_weight=0.0)
 
     def forward(self, inputs, targets, softmax=True):
         # Calculate individual losses
         loss_ce = self.ce_loss(inputs, targets.long())
         loss_dice = self.dice_loss(inputs, targets, softmax=softmax)
-        loss_topology = self.topology_loss(inputs, targets, softmax=softmax)
+        loss_cldice = self.cldice_loss(inputs, targets, softmax=softmax)
 
         # Combine losses with specified weights
         total_loss = (self.w_ce * loss_ce) + \
                      (self.w_dice * loss_dice) + \
-                     (self.w_topology * loss_topology)
+                     (self.w_cldice * loss_cldice)
 
         # Return total loss and individual components for logging
-        return total_loss, loss_ce, loss_dice, loss_topology
+        return total_loss, loss_ce, loss_dice, loss_cldice
 
 
 def calculate_ce_weights(label_batch, num_classes):
@@ -212,19 +212,20 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
     )
     
     # Calculate padding if needed
-    # new_shape, padding = img_tiler.calculate_padding()
-    # img_tiler.recalculate(data_shape=new_shape)
-    # mask_tiler.recalculate(data_shape=new_shape)
+    new_shape, padding = img_tiler.calculate_padding()
+    img_tiler.recalculate(data_shape=new_shape)
+    mask_new_shape = (new_shape[0], new_shape[1], classes)
+    mask_tiler.recalculate(data_shape=mask_new_shape)
     
-    # padded_img = np.pad(image, padding)
+    padded_img = np.pad(image, padding)
     
     mask_merger = tiler.Merger(
         tiler=mask_tiler, 
-        # window="overlap-tile",
+        window="overlap-tile",
     )
         
     net.eval()
-    for batch_id, batch in img_tiler(image, batch_size=batch_size, progress_bar=False):
+    for batch_id, batch in img_tiler(padded_img, batch_size=batch_size, progress_bar=False):
         # batch is (B, H, W, C)
         # Model expects (B, C, H, W)
         batch_tensor = torch.from_numpy(batch.transpose(0, 3, 1, 2)).float().cuda()
@@ -237,8 +238,8 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
         probs_np = probs.cpu().numpy().transpose(0, 2, 3, 1)
         mask_merger.add_batch(batch_id, batch_size, probs_np)
         
-    # mask_pred_probs = mask_merger.merge(extra_padding=padding, dtype=np.float32)
-    mask_pred_probs = mask_merger.merge(unpad=True, dtype=np.float32)
+    mask_pred_probs = mask_merger.merge(extra_padding=padding, dtype=image.dtype)
+    # mask_pred_probs = mask_merger.merge(unpad=True, dtype=np.float32)
     # mask_pred_probs is (H, W, Classes)
     
     # Argmax
@@ -253,14 +254,12 @@ def test_single_image_tiler(image, label, net, classes, tile_size=224, overlap=0
         # Normalize image to 0-255 for saving
         # image is float.
         if len(image.shape) == 3:
-             img_save = image # H, W, C
+            img_save = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)  # H, W, C
         else:
-             img_save = image
+            img_save = image
              
         img_save = (img_save - img_save.min()) / (img_save.max() - img_save.min() + 1e-8) * 255
         img_save = img_save.astype(np.uint8)
-
-        print(img_save.shape, label.shape, prediction.shape)
         
         cv2.imwrite(test_save_path + '/'+case + "_img.png", img_save)
         cv2.imwrite(test_save_path + '/'+case + "_gt.png", (label*255).astype(np.uint8))
@@ -287,11 +286,56 @@ def calculate_dice_ce_loss(pred, target, num_classes, ce_weight=0.5):
 
 def calculate_vessel_loss(pred, target, num_classes, alpha=None, bg_index=0):
     vessel_loss_fn = VesselLoss(num_classes, alpha=alpha, bg_index=bg_index)
-    total_loss, loss_ce, loss_dice, loss_topology = vessel_loss_fn(pred, target)
+    total_loss, loss_ce, loss_dice, loss_cldice = vessel_loss_fn(pred, target)
     return {
         "total_loss": total_loss, 
         "loss_ce": loss_ce, 
         "loss_dice": loss_dice, 
-        "loss_topology": loss_topology
+        "loss_cldice": loss_cldice
     }
- 
+
+
+class EarlyStopping:
+    """Early stops the training if validation metric doesn't improve after a given patience."""
+    def __init__(self, patience=100, mode='min'):
+        self.patience = patience
+        self.mode = mode
+        self.counter = 0
+        self.best_performance = float('inf') if mode == 'min' else float('-inf')
+        self.early_stop = False
+
+    def __call__(self, performance):
+        improved = False
+        if self.mode == 'min':
+            # Specifically for HD95, ignore 0.0 results, require strictly better
+            if performance > 1e-8 and performance < self.best_performance:
+                self.best_performance = performance
+                self.counter = 0
+                improved = True
+            else:
+                self.counter += 1
+        else:
+            if performance > self.best_performance:
+                self.best_performance = performance
+                self.counter = 0
+                improved = True
+            else:
+                self.counter += 1
+
+        if self.counter >= self.patience:
+            self.early_stop = True
+            
+        return improved
+        
+    def state_dict(self):
+        return {
+            'counter': self.counter,
+            'best_performance': self.best_performance,
+            'early_stop': self.early_stop
+        }
+        
+    def load_state_dict(self, state_dict):
+        self.counter = state_dict.get('counter', 0)
+        self.best_performance = state_dict.get('best_performance', float('inf') if self.mode == 'min' else float('-inf'))
+        self.early_stop = state_dict.get('early_stop', False)
+        

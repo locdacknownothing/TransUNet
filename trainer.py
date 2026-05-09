@@ -21,7 +21,8 @@ from utils import (
     test_single_volume, 
     test_single_image,
     test_single_image_tiler,
-    calculate_ce_weights,
+    # calculate_ce_weights,
+    EarlyStopping,
 )
 from datasets.transforms import RandomGenerator
 
@@ -250,14 +251,19 @@ def trainer_retinal_vessel(args, model, snapshot_path):
     writer = SummaryWriter(snapshot_path + '/log')
     iter_num = 0
     start_epoch = 0
-    best_performance = float('inf')  # Initialize to positive infinity for minimizing performance metric
+    early_stopping = EarlyStopping(patience=100, mode='max')
+    
     if hasattr(args, 'resume') and args.resume:
         checkpoint = torch.load(args.resume, weights_only=False)
         model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         start_epoch = checkpoint['epoch']
         iter_num = checkpoint['iter_num']
-        best_performance = checkpoint.get('best_performance', float('inf'))  # Initialize to positive infinity for minimizing performance metric
+        if 'early_stopping' in checkpoint:
+            early_stopping.load_state_dict(checkpoint['early_stopping'])
+        elif 'best_performance' in checkpoint:
+            # For backward compatibility
+            early_stopping.best_performance = checkpoint['best_performance']
         logging.info("Resumed from %s at epoch %d", args.resume, start_epoch)
 
     max_epoch = args.max_epochs
@@ -331,37 +337,43 @@ def trainer_retinal_vessel(args, model, snapshot_path):
             metric_list = (0.0,)  # shape (1,) for broadcasting 
 
             for i_batch, sampled_batch in enumerate(valloader):
-                if "fov_mask" in sampled_batch:
-                    for image, label, mask in zip(sampled_batch["image"], sampled_batch["label"], sampled_batch["fov_mask"]):
-                        metric_i = test_fn(image, label, model, num_classes, img_size, fov_mask=mask)
-                        metric_list += np.array(metric_i)
-                else:
-                    for image, label in zip(sampled_batch["image"], sampled_batch["label"]):
-                        metric_i = test_fn(image, label, model, num_classes, img_size)
-                        metric_list += np.array(metric_i)
+                # if "fov_mask" in sampled_batch:
+                #     for image, label, mask in zip(sampled_batch["image"], sampled_batch["label"], sampled_batch["fov_mask"]):
+                #         metric_i = test_fn(image, label, model, num_classes, img_size, fov_mask=mask)
+                #         metric_list += np.array(metric_i)
+                # else:
+                for image, label in zip(sampled_batch["image"], sampled_batch["label"]):
+                    metric_i = test_fn(image, label, model, num_classes, img_size)
+                    metric_list += np.array(metric_i)
             
             metric_list = np.array(metric_list)
 
             metric_list = metric_list / len(db_val)
             mean_dice = metric_list[0, 0] # Dice
             mean_hd95 = metric_list[0, 1]  # HD95
-            performance = mean_hd95
+            performance = mean_dice
             
             writer.add_scalar('info/val_mean_dice', mean_dice, iter_num)
             writer.add_scalar('info/val_mean_hd95', mean_hd95, iter_num)
 
-            if 1e-8 < performance < best_performance:
-                best_performance = performance
+            improved = early_stopping(performance)
+            if improved:
                 save_best = os.path.join(snapshot_path, 'best_model.pth')
                 state = {
                     'epoch': epoch_num + 1,
                     'iter_num': iter_num,
                     'state_dict': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
-                    'best_performance': best_performance
+                    'best_performance': early_stopping.best_performance,
+                    'early_stopping': early_stopping.state_dict()
                 }
                 torch.save(state, save_best)
                 logging.info('Best model | epoch %d : mean_dice : %f mean_hd95 : %f' % (epoch_num, mean_dice, mean_hd95))
+                
+            if early_stopping.early_stop:
+                logging.info('Early stopping triggered after %d epochs without improvement.', early_stopping.patience)
+                iterator.close()
+                break
 
             model.train()
 
@@ -372,16 +384,10 @@ def trainer_retinal_vessel(args, model, snapshot_path):
             'iter_num': iter_num,
             'state_dict': model.state_dict(),
             'optimizer': optimizer.state_dict(),
-            'best_performance': best_performance
+            'best_performance': early_stopping.best_performance,
+            'early_stopping': early_stopping.state_dict()
         }
         torch.save(state, save_latest_path)
-
-        if epoch_num >= max_epoch - 1:
-            save_mode_path = os.path.join(snapshot_path, 'epoch_' + str(epoch_num) + '.pth')
-            torch.save(state, save_mode_path)
-            logging.info("save model to {}".format(save_mode_path))
-            iterator.close()
-            break
 
     writer.close()
     return "Training Finished!"
