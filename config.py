@@ -35,11 +35,8 @@ dataset_config = {
         'tile': True,  # Whether to use tiling for CHASEDB dataset
         'root_path': 'data/CHASEDB',
         'volume_path': 'data/CHASEDB',
-        'list_dir': None,
         'num_classes': 2,
-        'z_spacing': 1,
-        # 'loss_name': 'dice_ce',
-        'loss_name': 'vessel_fg',
+        'loss_name': 'vessel_ce4_dice4_cldice2',
     },
     'HRF': {
         'Dataset': HRFTileDataset,
