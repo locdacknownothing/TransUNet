@@ -43,10 +43,7 @@ dataset_config = {
         'tile': True,
         'root_path': 'data/HRF',
         'volume_path': 'data/HRF',
-        'list_dir': None,
         'num_classes': 2,
-        'z_spacing': 1,
-        # 'loss_name': 'dice_ce',
-        'loss_name': 'vessel_fg_fov',
+        'loss_name': 'vessel_ce4_dice4_cldice22',
     },
 }

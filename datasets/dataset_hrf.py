@@ -15,8 +15,8 @@ class HRFDataset(Dataset):
         self.img_size = img_size
 
         csv_map = {
-            'train': 'train.csv',
-            'val': 'val.csv',
+            'train': 'train_full_res.csv',
+            'val': 'val_full_res.csv',
             'test': 'test.csv'
         }
         
@@ -87,6 +87,9 @@ class HRFTileDataset(HRFDataset):
     def __init__(self, base_dir, split, transform=None, img_size=224, overlap=0.5, *args, **kwargs):
         super().__init__(base_dir, split, transform, img_size, *args, **kwargs)
 
+        # Mask
+        self.mask_paths = self.data_df['mask_paths'].tolist() if 'mask_paths' in self.data_df.columns else None
+
         # Tiling parameters 
         self.tile_size = img_size
         self.overlap = overlap
@@ -110,7 +113,6 @@ class HRFTileDataset(HRFDataset):
             tile_shape=(self.tile_size, self.tile_size, self.img_shape[-1]),
             overlap=(int(self.tile_size * self.overlap), int(self.tile_size * self.overlap), 0),
             channel_dimension=2,
-            mode='reflect'
         )
         
         self.lbl_tiler = tiler.Tiler(
@@ -118,78 +120,121 @@ class HRFTileDataset(HRFDataset):
             tile_shape=(self.tile_size, self.tile_size, 1),
             overlap=(int(self.tile_size * self.overlap), int(self.tile_size * self.overlap), 0),
             channel_dimension=2,
-            mode='reflect'
         )
+
+        # Calculate padding if needed
+        new_shape, self.padding = self.img_tiler.calculate_padding()
+        self.img_tiler.recalculate(data_shape=new_shape)
+        lbl_new_shape = (new_shape[0], new_shape[1], 1)
+        self.lbl_tiler.recalculate(data_shape=lbl_new_shape)
+
         self.tiles_per_image = len(self.img_tiler)
+
+        self.valid_tiles = []
+        if self.split == 'train':
+            print(f"Initialized training set with {len(self.image_paths)} images, each will be tiled into {self.tiles_per_image} tiles of size {self.tile_size}x{self.tile_size} with {self.overlap*100}% overlap.")
+            
+            for img_idx in range(len(self.image_paths)):
+                img_path = self.image_paths[img_idx]
+                mask_path = self.mask_paths[img_idx] if self.mask_paths else None
+                image = io.imread(img_path).astype(np.float32)
+
+                if len(image.shape) == 2:
+                    image = np.expand_dims(image, axis=-1)
+
+                if mask_path is not None:
+                    mask = io.imread(mask_path)
+                    if len(mask.shape) == 3:
+                        mask = np.squeeze(mask)
+                        if len(mask.shape) == 3:
+                            mask = mask[:, :, 0]
+                    mask = np.expand_dims(mask, axis=-1)
+                    mask = (mask > 0).astype(np.float32)
+                    # apply mask to the image before padding
+                    image = image * mask
+
+                # remember to pad image
+                image = np.pad(image, self.padding)
+
+                for tile_id in range(self.tiles_per_image):
+                    tile_id = tile_id % len(self.img_tiler)
+                    image_tile = self.img_tiler.get_tile(image, tile_id)
+                    
+                    # checking valid tile if there are non-zero pixels
+                    if np.any(image_tile > 0):
+                        self.valid_tiles.append((img_idx, tile_id))
+            
+            print(f"Loaded {len(self.valid_tiles)} valid tiles out of {len(self.image_paths) * self.tiles_per_image} total tiles.")
 
     def __len__(self):
         if self.split == 'train':
-            return len(self.image_paths) * self.tiles_per_image
+            return len(self.valid_tiles)
         else:
             return len(self.image_paths)
 
     def __getitem__(self, idx):
         if self.split == 'train':
-            img_idx = idx // self.tiles_per_image
-            tile_id = idx % self.tiles_per_image
+            img_idx, tile_id = self.valid_tiles[idx]
         else:
             img_idx = idx
             tile_id = -1 # Not used for validation (full image)
 
         img_path = self.image_paths[img_idx]
         label_path = self.label_paths[img_idx]
+        mask_path = self.mask_paths[img_idx] if self.mask_paths else None
         
         image = io.imread(img_path)
         label = io.imread(label_path)
+        mask = io.imread(mask_path) if mask_path else None
         
+        # Fix channels before padding
+        if len(image.shape) == 2:
+            image = np.expand_dims(image, axis=-1)
+            
         if len(label.shape) == 3:
             label = np.squeeze(label)
             if len(label.shape) == 3:
-                 label = label[:, :, 0]
+                label = label[:, :, 0]
+        label = np.expand_dims(label, axis=-1)
+        
+        if mask is not None:
+            if len(mask.shape) == 3:
+                mask = np.squeeze(mask)
+                if len(mask.shape) == 3:
+                    mask = mask[:, :, 0]
+            mask = np.expand_dims(mask, axis=-1)
+            mask = (mask > 0).astype(np.float32)
+            # apply mask directly to the image
+            image = image * mask
         
         # Binarize label
         label = (label > 0).astype(np.float32)
         
-        # # Normalize image z-score
-        # image = image.astype(np.float32)
-        # if image.std() > 0:
-        #     image = (image - image.mean()) / (image.std() + 1e-8)
-        # else:
-        #      image = image - image.mean()
-        
         # Tiling logic for training
         if self.split == 'train':
-            # Handle channels
-            if len(image.shape) == 2:
-                image = np.expand_dims(image, axis=-1)
-            
-            # Check shape consistency
-            if image.shape != self.img_shape:
-                # Basic resize attempt if needed, or error out. 
-                # Given HRF images are usually consistent, we stick to strict check for now or basic warning.
-                 if image.shape != self.img_shape:
-                     raise ValueError(f"Image shape {image.shape} does not match reference shape {self.img_shape}")
-
-            # Label needs channel dim because of tiler expected data_shape.
-            label = np.expand_dims(label, axis=-1)
-            
-            if label.shape != self.lbl_shape:
-                 raise ValueError(f"Label shape {label.shape} does not match reference shape {self.lbl_shape}")
-            
             actual_len = len(self.img_tiler)
             tile_id = tile_id % actual_len
+
+            padded_image = np.pad(image, self.padding)
+            padded_label = np.pad(label, self.padding)
             
-            image_tile = self.img_tiler.get_tile(image, tile_id)
-            label_tile = self.lbl_tiler.get_tile(label, tile_id)
+            image_tile = self.img_tiler.get_tile(padded_image, tile_id)
+            label_tile = self.lbl_tiler.get_tile(padded_label, tile_id)
             
             # Squeeze back
+            # image_tile: H, W, C
+            # label_tile: H, W, 1 -> H, W
             label_tile = label_tile.squeeze(-1)
             
+            # image_tile might be H,W,1 if original was gray. If RGB, H,W,3.
             if image_tile.shape[-1] == 1:
                 image_tile = image_tile.squeeze(-1)
                 
             sample = {'image': image_tile, 'label': label_tile}
         else:
+            if image.shape[-1] == 1:
+                image = image.squeeze(-1)
+            label = label.squeeze(-1)
             sample = {'image': image, 'label': label}
 
         if self.transform and self.split == 'train':

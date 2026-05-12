@@ -58,7 +58,7 @@ def inference(args, model, test_save_path=None):
         if args.dataset in ['DRIVE', 'CHASEDB', 'HRF']:
             if args.tile:
                 metric_i = test_single_image_tiler(image, label, model, classes=args.num_classes, tile_size=args.img_size,
-                                       test_save_path=test_save_path, case=case_name, fov_mask=fov_mask)
+                                       batch_size=args.batch_size, test_save_path=test_save_path, case=case_name, fov_mask=fov_mask)
             else:
                 metric_i = test_single_image(image, label, model, classes=args.num_classes, patch_size=args.img_size,
                                        test_save_path=test_save_path, case=case_name)
